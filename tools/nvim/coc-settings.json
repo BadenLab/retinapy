@@ -1,0 +1,10 @@
+{
+  "pyright.enable" : true,
+  "languageserver": {
+	  "latex": {
+		"command": "/home/k/.cargo/bin/texlab",
+		"filetypes": ["tex", "bib", "plaintex", "context"]
+	}
+  },
+  "svelte.enable-ts-plugin": true
+}

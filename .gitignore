@@ -1,0 +1,29 @@
+# Editor temporaries
+*.swp
+*.swo
+
+# Editor config
+# Ignore nvim stuff?
+# tools/nvim/
+
+# macOS dir files
+.DS_Store
+
+# Packaging
+*.egg-info/
+dist/
+
+# Compiled Python
+*.pyc
+
+# Pytest cache
+.pytest_cache/
+__pycache__/
+
+# Jupyter Lab notebook checkpoints
+.ipynb_checkpoints/
+
+# Reserved folders for input data, output data and output binaries.
+data
+out
+bin
