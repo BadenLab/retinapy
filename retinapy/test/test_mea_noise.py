@@ -68,17 +68,14 @@ def test_cluster_ids(response_data):
 
 
 def test_upsample_stimulus_exceptions():
-    # Expect exception if new frequency is less-equal original frequency.
+    # Expect exception if zoom is less than 1:
     with pytest.raises(ValueError):
-        mea.upsample_stimulus(np.array([0, 1, 0, 0, 1]), 
-                mea.STIMULUS_FREQ - 1)
+        mea.upsample_stimulus(np.array([0, 1, 0, 0, 1]), 0)
     with pytest.raises(ValueError):
-        mea.upsample_stimulus(np.array([0, 1, 0, 0, 1]), 
-                mea.STIMULUS_FREQ)
-    # Expect exception if new frequency is not multiple of original frequency.
+        mea.upsample_stimulus(np.array([0, 1, 0, 0, 1]), -1)
+    # Expect exception if zoom is not integer.
     with pytest.raises(ValueError):
-        mea.upsample_stimulus(np.array([0, 1, 0, 0, 1]), 
-                int(mea.STIMULUS_FREQ * 4.5))
+        mea.upsample_stimulus(np.array([0, 1, 0, 0, 1]), 1.5)
 
 
 def test_upsample_stimulus():
@@ -91,13 +88,13 @@ def test_upsample_stimulus():
              [1, 1, 0, 0], 
              [0, 0, 1, 1], 
              [1, 1, 0, 0]])
-    up_stimulus = mea.upsample_stimulus(square_stimulus_RGBU, new_freq=40)
+    up_stimulus = mea.upsample_stimulus(square_stimulus_RGBU, factor=2)
     expected_shape = (16, 4)
     assert up_stimulus.shape == expected_shape
     # No hard edges:
     for i in range(up_stimulus.shape[0]-1):
-        mdiff = up_stimulus[i, :] - up_stimulus[i+1, :]
-        assert np.max(up_stimulus[i, :] - up_stimulus[i+1, :]) < 0.9
+        mdiff = up_stimulus[i] - up_stimulus[i+1]
+        assert np.max(up_stimulus[i] - up_stimulus[i+1]) < 0.9
 
 
 def test_stimulus_slice():
@@ -372,16 +369,18 @@ def test_spike_windows():
 
 def test_write_rec_windows(tmp_path, response_data, stimulus_data):
     # Setup
-    sample_freq = 40
+    stimulus_zoom = 2
+    orig_stimulus_freq = 20 # Hz
+    stimulus_freq = orig_stimulus_freq * stimulus_zoom
     rec_id = 2
     kernel_len = 6
     post_kernel_pad = 1
     kernels_per_file = 100
-    up_stim = mea.upsample_stimulus(stimulus_data, sample_freq)
+    up_stim = mea.upsample_stimulus(stimulus_data, stimulus_zoom)
     rec_name = mea.recording_names(response_data)[rec_id]
     # Test
     # TODO: add some more checks.
     # Currently, the test only checks that the method runs to completion.
     mea._write_rec_windows(up_stim, response_data, rec_name, rec_id, tmp_path, 
-            kernel_len, post_kernel_pad, sample_freq, kernels_per_file)
+            kernel_len, post_kernel_pad, stimulus_freq, kernels_per_file)
 

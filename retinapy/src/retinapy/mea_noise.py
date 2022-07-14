@@ -156,35 +156,29 @@ def _lowpass_filter(stimulus: np.ndarray) -> np.ndarray:
     return scipy.signal.filtfilt(b, a, stimulus, axis=time_axis)
 
 
-def upsample_stimulus(stimulus: np.ndarray, new_freq: int) -> np.ndarray:
+def upsample_stimulus(stimulus: np.ndarray, factor: int) -> np.ndarray:
     """
-    Upsamples the stimulus to the given frequency.
-
-    It is assumed that the original frequency is `STIMULUS_FREQ`.
+    Upsamples the stimulus by the given factor.
 
     Args:
         stimulus: The stimulus to upsample. This is a 1D or 2D array. If 2D,
         timestep is the first axis and color channel is the second axis.
+        factor: factor by which to increase the samples of the stimulus.
     """
-    if new_freq % STIMULUS_FREQ != 0:
-        raise ValueError(f'Requested frequency ({new_freq}) is not a  '
-                f'multiple of the original ({STIMULUS_FREQ}).')
-    probably_incorrect_axis = len(stimulus.shape) == 2 and \
-        (stimulus.shape[0] < stimulus.shape[1])
-    if probably_incorrect_axis:
-        logging.warning('Input seems to be in channel-first dimension order '
-                f'(shape: {stimulus.shape}). Expected input to have '
-                'channel-last order.')
-    zoom_factor = new_freq / STIMULUS_FREQ
-    assert zoom_factor.is_integer(), 'The above exception should be thrown.'
-    zoom_factor = int(zoom_factor)
+    if factor % 1 != 0:
+        raise ValueError('Upsampling factor must be an integer.')
+    if factor < 1:
+        raise ValueError(f'Only positive zoom factors are supported. '
+                f'Got {factor}.')
+    elif factor == 1:
+        logging.warning('Upsampling by 1 is a no-op.')
     # Zoom the time axis and not the color axis. Remember, shape is TC. 
-    zoomed_stimulus = np.kron(stimulus, np.ones((zoom_factor, 1)))
+    zoomed_stimulus = np.kron(stimulus, np.ones((factor, 1)))
     filtered_stimulus = _lowpass_filter(zoomed_stimulus)
     return filtered_stimulus
 
 
-def stimulus_slice(sampled_stimulus: np.ndarray, sampling_rate: int, 
+def stimulus_slice(sampled_stimulus: np.ndarray, sampling_rate: float, 
         spike: int, kernel_len: int, post_kernel_pad: int) -> np.ndarray:
     """
     Return a subset of the stimulus around the spike point.
@@ -284,17 +278,18 @@ def create_kernel_training_data(
         save_dir,
         kernel_len: int = 800,
         post_kernel_pad: int = 200,
-        sampling_freq: int = 1000,
+        stimulus_freq: float = STIMULUS_FREQ,
+        stimulus_zoom: int = 5,
         samples_per_file: int = 1024):
     save_dir = pathlib.Path(save_dir)
     _save_recording_names(recording_names(response), save_dir)
-    up_stimulus = upsample_stimulus(np.array(stimulus), sampling_freq)
+    up_stimulus = upsample_stimulus(np.array(stimulus), stimulus_zoom)
     # TODO: only use stimulus 1? What is stimulus 7?
     by_rec = response.xs(1, level='Stimulus ID', 
             drop_level=True).groupby('Recording')
     for rec_id, (rec_name, df) in enumerate(by_rec):
         _write_rec_windows(up_stimulus, df, rec_name, rec_id, save_dir, 
-                kernel_len, post_kernel_pad, sampling_freq, samples_per_file)
+                kernel_len, post_kernel_pad, stimulus_freq, samples_per_file)
 
 
 def _write_rec_windows(
@@ -305,7 +300,7 @@ def _write_rec_windows(
         data_root_dir, 
         kernel_len: int, 
         post_kernel_pad: int, 
-        stimulus_sampling_freq: int, 
+        stimulus_sampling_freq: float, 
         out_windows_per_file: int):
     """
     Internal helper function
@@ -360,7 +355,7 @@ def _write_window_data_part(ids, windows, save_dir, part_id):
 
 def spike_windows(up_stimulus: pd.DataFrame, response: pd.DataFrame, 
         rec_name: str, kernel_len: int = 800, post_kernel_pad: int = 200, 
-        sampling_freq=1000) -> Tuple[np.ndarray, np.ndarray]:
+        sampling_freq: float=1000) -> Tuple[np.ndarray, np.ndarray]:
     """
     Extract all spike windows for a single recording.
 
