@@ -2,7 +2,7 @@ import setuptools
 
 setuptools.setup(
     name='retinapy',
-    version='0.0.1.dev6',
+    version='0.0.1.dev7',
     author='Baden Lab members',
     author_email='kevin@kdoran.com',
     description=('RetinaPy is a Python package for working with recordings of '
