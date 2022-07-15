@@ -23,7 +23,7 @@ NUM_STIMULUS_LEDS = 4
 REC_NAMES_FILENAME = 'recording_names.pickle'
 CLUSTER_IDS_FILENAME = 'cluster_ids.pickle'
 IDS_FILE_PATTERN = '{part}_ids.npy'
-WINDOW_FILE_PATTERN = '{part}_windows.npy'
+SNIPPET_FILE_PATTERN = '{part}_snippets.npy'
 RNG_SEED = 123
 
 
@@ -179,24 +179,57 @@ def upsample_stimulus(stimulus: np.ndarray, factor: int) -> np.ndarray:
 
 
 def stimulus_slice(sampled_stimulus: np.ndarray, sampling_rate: float, 
-        spike: int, kernel_len: int, post_kernel_pad: int) -> np.ndarray:
+        spike: int, total_len: int, post_spike_len: int) -> np.ndarray:
     """
     Return a subset of the stimulus around the spike point.
 
-    Note 1: The kernel length describes only the time window before the spike. 
-            The kernel is padded by `post_kernel_pad` to get its final size.
+    Args:
+        sampled_stimulus: The stimulus, upsampled to the spike frequency.
+        sampling_rate: The sampling rate of the stimulus.
+        spike: The sensor sample in which the spike was detected.
+        total_len: The length of the snippet in stimulus frames. 
+        post_spike_len: The number of frames to pad after the spike.
+    Returns:
+        A Numpy array of shape (total_len, NUM_STIMULUS_LEDS).
+
+    Note 1: The total length describes the snippet length inclusive of the post
+        spike padding.
     Note 2: If the spike falls exactly on the boundary of stimulus samples,
             then the earlier stimulus sample will be used.
 
-    Calculation details
-     -----------------
-    Note: I'm not 100% confident that the below sample choice is correct.
+    Example
+    =======
+
+        frame #:  |   0   |   1   |   2   |   3   |   4   |   5   |   6   |   7   |
+        ===========================================================================
+        stim:     |   0   |   1   |   1   |   0   |   0   |   1   |   0   |   0   |
+                  |   1   |   1   |   0   |   0   |   1   |   0   |   0   |   0   |
+                  |   1   |   1   |   1   |   0   |   0   |   0   |   0   |   1   |
+                  |   0   |   0   |   0   |   0   |   1   |   0   |   1   |   1   |
+        ===========================================================================
+        resp:     |----------------------------------*----------------------------|
+
+    The slice with parameters:
+        - total length = 6
+        - post spike length = 1
+
+    Would be:
+
+                  |   1   |   1   |   0   |   0   |   1   |              
+                  |   1   |   0   |   0   |   1   |   0   |              
+                  |   1   |   1   |   0   |   0   |   0   |              
+                  |   0   |   0   |   0   |   1   |   0   |              
+
+
+
+    Frame calculation
+     ----------------
+    (I'm not 100% confident that the below sample choice is correct.)
 
     In the following scenario:
 
-        stimulus frame:   |   0       1       2   |
-        stimulus samples: |---*---|---*---|---*---|
-        spike time:       |---------*-------------|
+        stimulus frame:  |  0  |  1  |  2  |  3  |
+        spike:           |-----*-----------------|
 
     The stimulus frame in which the spike falls is:
 
@@ -204,30 +237,22 @@ def stimulus_slice(sampled_stimulus: np.ndarray, sampling_rate: float,
                                                        stimulus_sampling_rate)
                                 = 1  (in the above example)
 
-     Note 2 above refers to the fact that all of the following spikes fall
-     within the same stimulus frame:
+    In the following scenario all of the following spikes fall within the same 
+    stimulus frame:
 
-        stimulus frame:   |   0       1       2   |
-        stimulus samples: |---*---|---*---|---*---|
-        spike time:       |-------********--------|
-
-    Args:
-        sampled_stimulus: The stimulus, upsampled to the spike frequency.
-        sampling_rate: The sampling rate of the stimulus.
-        spike: The sensor sample in which the spike was detected.
-        kernel_len: The length of the kernel in samples. This is the number of 
-            samples to take before and inclusive of the sample in which the 
-            spike falls. 
-        post_kernel_pad: The number of samples to pad after the spike.
-    Returns:
-        A (kernel_len + post_kernel_pad, NUM_STIMULUS_LEDS) shaped Numpy array.
+        stimulus frame: |   0   |   1   |   2   |
+        spike time:     |-------********--------|
     """
+    if total_len < post_spike_len + 1:
+        raise ValueError(f'Total length must be at least 1 greater than the '
+                f'post-spike lengths + 1. Got total_len ({total_len}) and '
+                f'post_spike_len ({post_spike_len}).')
     # 1. Select the sample to represent the spike.
     stimulus_frame_of_spike = int(spike * (sampling_rate / ELECTRODE_FREQ))
-    # 2. Calculate the window start and end.
-    # The -1 appears as we include the spike sample in the kernel.
-    win_start = stimulus_frame_of_spike - (kernel_len - 1) 
-    win_end = stimulus_frame_of_spike + post_kernel_pad + 1 
+    # 2. Calculate the snippet start and end.
+    # The -1 appears as we include the spike sample in the snippet.
+    win_start = (stimulus_frame_of_spike + post_spike_len) - (total_len - 1)
+    win_end = stimulus_frame_of_spike + post_spike_len + 1 
     left_pad = max(-win_start, 0)
     right_pad = max(win_end - sampled_stimulus.shape[0], 0)
     win_start = max(win_start, 0)
@@ -272,15 +297,16 @@ def _save_cluster_ids(cell_cluster_ids, rec_id, data_root_dir) -> pathlib.Path:
     return save_path
 
 
-def create_kernel_training_data(
+def create_snippet_training_data(
         stimulus: pd.DataFrame, 
         response: pd.DataFrame,
         save_dir,
-        kernel_len: int = 800,
-        post_kernel_pad: int = 200,
+        snippet_len: int = 1000,
+        snippet_pad: int = 200,
         stimulus_freq: float = STIMULUS_FREQ,
         stimulus_zoom: int = 5,
-        samples_per_file: int = 1024):
+        empty_snippets: float = 0,
+        snippets_per_file: int = 1024):
     save_dir = pathlib.Path(save_dir)
     _save_recording_names(recording_names(response), save_dir)
     up_stimulus = upsample_stimulus(np.array(stimulus), stimulus_zoom)
@@ -288,113 +314,115 @@ def create_kernel_training_data(
     by_rec = response.xs(1, level='Stimulus ID', 
             drop_level=True).groupby('Recording')
     for rec_id, (rec_name, df) in enumerate(by_rec):
-        _write_rec_windows(up_stimulus, df, rec_name, rec_id, save_dir, 
-                kernel_len, post_kernel_pad, stimulus_freq, samples_per_file)
+        _write_rec_snippets(up_stimulus, df, rec_name, rec_id, save_dir, 
+                snippet_len, snippet_pad, stimulus_freq, empty_snippets, 
+                snippets_per_file)
 
 
-def _write_rec_windows(
+def _write_rec_snippets(
         up_stimulus: pd.DataFrame, 
         response: pd.DataFrame,
         rec_name: str, 
         rec_id: int,
         data_root_dir, 
-        kernel_len: int, 
-        post_kernel_pad: int, 
-        stimulus_sampling_freq: float, 
-        out_windows_per_file: int):
+        snippet_len: int, 
+        snippet_pad: int, 
+        stimulus_freq: float, 
+        empty_snippets: float,
+        snippets_per_file: int):
     """
-    Internal helper function
+    Generate, shuffle and write the snippets for a single recording.
+
+    The snippets may be split across multiple files.
     """
     # Create directory for recording.
     rec_dir = pathlib.Path(data_root_dir) / str(rec_id)
     rec_dir.mkdir(parents=False, exist_ok=True)
-    # Extract the stimulus windows around the spikes.
-    windows, cluster_ids = spike_windows(up_stimulus, response, 
-            rec_name, kernel_len, post_kernel_pad, stimulus_sampling_freq)
+    # Extract the stimulus snippet around the spikes.
+    snippets, cluster_ids = spike_snippets(up_stimulus, response, rec_name, 
+            snippet_len, snippet_pad, stimulus_freq)
     # Save the cluster ids.
     _save_cluster_ids(cluster_ids, rec_id, data_root_dir)
-    assert len(cluster_ids) == len(windows)
-    # Shuffle the cluster ids and windows together.
+    assert len(cluster_ids) == len(snippets)
+    # Shuffle the cluster ids and snippets together.
     rng = np.random.default_rng(RNG_SEED)
     shuffle_idxs = np.arange(len(cluster_ids))
     rng.shuffle(shuffle_idxs)
     cluster_ids = cluster_ids[shuffle_idxs]
-    windows = windows[shuffle_idxs]
+    snippets = snippets[shuffle_idxs]
     # Fill array with rec_id
     rec_ids = np.full(len(cluster_ids), rec_id)
     # Create 2 column array, recording ids and cluster ids.
     # ([1, 1, 1, 1], [1, 2, 3, 4]) -> [[1, 1], [1, 2], [1, 3], [1, 4]]
     rec_clusters = np.vstack((rec_ids, cluster_ids)).T 
 
-    # Save the windows and ids across multiple files.
+    # Save the snippets and ids across multiple files.
     def save_splits():
-        ids_split = np.array_split(rec_clusters, out_windows_per_file)
-        windows_split = np.array_split(windows, out_windows_per_file)
-        assert len(ids_split) == len(windows_split)
-        for i, (ids, ks) in enumerate(zip(ids_split, windows_split)):
-            _write_window_data_part(ids, ks, rec_dir, i)
+        ids_split = np.array_split(rec_clusters, snippets_per_file)
+        snippets_split = np.array_split(snippets, snippets_per_file)
+        assert len(ids_split) == len(snippets_split)
+        for i, (ids, ks) in enumerate(zip(ids_split, snippets_split)):
+            _write_snippet_data_part(ids, ks, rec_dir, i)
     save_splits()
 
 
-def _write_window_data_part(ids, windows, save_dir, part_id):
+def _write_snippet_data_part(ids, snippets, save_dir, part_id):
     """
-    Saves a subset of the spike windows.
+    Saves a subset of the spike snippets.
 
-    This is used internally to spread the window data over multiple files.
+    This is used internally to spread the snippets data over multiple files.
     """
     ids_filename = IDS_FILE_PATTERN.format(part=part_id)
-    win_filename = WINDOW_FILE_PATTERN.format(part=part_id)
+    win_filename = SNIPPET_FILE_PATTERN.format(part=part_id)
     ids_save_path = pathlib.Path(save_dir) / ids_filename
     win_save_path = pathlib.Path(save_dir) / win_filename
     with ids_save_path.open('wb') as f:
         np.save(f, ids)
     with win_save_path.open('wb') as f:
-        np.save(f, windows)
+        np.save(f, snippets)
     return ids_save_path, win_save_path
 
 
-def spike_windows(up_stimulus: pd.DataFrame, response: pd.DataFrame, 
-        rec_name: str, kernel_len: int = 800, post_kernel_pad: int = 200, 
+def spike_snippets(up_stimulus: pd.DataFrame, response: pd.DataFrame, 
+        rec_name: str, snippet_len: int = 1000, snippet_pad: int = 200, 
         sampling_freq: float=1000) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Extract all spike windows for a single recording.
-
-    Spike windows, also called spike "snippets".
+    Extract all spike snippets for a single recording.
 
     Args:
         up_stimulus: the stimulus. If you want the stimulus upsampled, do it 
             before calling this method, as it isn't done here.
         response: the response dataframe.
-        rec_name: the name of the recording to extract windows for.
-        kernel_len: the number of timesteps of the stimulus to include before
-            and inclusive of the spike timestep.
-        post_kernel_pad: the number of timesteps to include after the spike.
+        rec_name: the name of the recording to extract snippets for.
+        snippet_len: the length of the snippet.
+        snippet_pad: the number of timesteps to include after the spike.
         sampling_freq: the sampling frequency of the *stimulus*.
     
     Returns: two np.ndarrays as a tuple. The first element contains 
-    the spike windows, and the second element contains ids of the clusters.
+    the spike snippets, and the second element contains ids of the clusters.
     """
     response = response.xs(rec_name, level='Recording').reset_index(
             level='Cell index').drop('Kernel', axis=1, errors='ignore')
 
-    def create_windows(spikes) -> List[np.ndarray]:
-        """Create the windows for a list of spikes."""
-        wins = []
+    def create_snippets(spikes) -> List[np.ndarray]:
+        """Create the snippets for a list of spikes."""
+        snips = []
         for spike_frame in spikes.compressed():
             w = stimulus_slice(up_stimulus, sampling_freq, spike_frame, 
-                    kernel_len, post_kernel_pad)
-            wins.append(w)
-        return wins
+                    snippet_len, snippet_pad)
+            snips.append(w)
+        return snips
 
-    # Gather the windows and align them with a matching array of cluster ids.
-    windows = []
+    # Gather the snippets and align them with a matching array of cluster ids.
+    snippets = []
     cluster_ids = []
     for row_as_tuple in response.itertuples(index=False):
         cluster_id, spikes = row_as_tuple
-        wins = create_windows(spikes)
-        cluster_ids.extend([cluster_id,]*len(wins))
-        windows.extend(wins)
-    windows = np.stack(windows)
+        snips = create_snippets(spikes)
+        cluster_ids.extend([cluster_id,]*len(snips))
+        snippets.extend(snips)
+    snippets = np.stack(snippets)
     cluster_ids = np.array(cluster_ids)
-    return windows, cluster_ids
+    return snippets, cluster_ids
+
 

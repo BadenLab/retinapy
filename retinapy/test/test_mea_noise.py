@@ -120,7 +120,7 @@ def test_stimulus_slice():
              [1, 0, 0, 0], #  -       3  |
              [1, 1, 0, 0]] #          |  4
         )
-    kernel_len = 3
+    total_len = 5
     pad = 2
     stimulus_sample_rate = 40
     # A bit of reverse engineering to get the sensor frame of the spike.
@@ -137,7 +137,7 @@ def test_stimulus_slice():
     # Case where no padding is needed.
     for s in stimulus_frame_to_spikes(stim_frame_of_spike[0]):
         stim_slice = mea.stimulus_slice(stimulus, stimulus_sample_rate, s, 
-                kernel_len, pad)
+                total_len, pad)
         expected_slice = np.array([
             [0, 1, 1, 1],
             [0, 0, 1, 1],
@@ -154,7 +154,7 @@ def test_stimulus_slice():
     # Sample is near the beginning and needs padding.
     for s in stimulus_frame_to_spikes(stim_frame_of_spike[1]):
         stim_slice = mea.stimulus_slice(stimulus, stimulus_sample_rate, s, 
-                kernel_len, pad)
+                total_len, pad)
         expected_slice = np.array([
             [0, 0, 0, 0],
             [1, 1, 1, 1],
@@ -169,7 +169,7 @@ def test_stimulus_slice():
     # Sample is _at_ the beginning and needs padding.
     for s in stimulus_frame_to_spikes(stim_frame_of_spike[2]):
         stim_slice = mea.stimulus_slice(stimulus, stimulus_sample_rate, s, 
-                kernel_len, pad)
+                total_len, pad)
         expected_slice = np.array([
             [0, 0, 0, 0],
             [0, 0, 0, 0],
@@ -184,7 +184,7 @@ def test_stimulus_slice():
     # Sample is near the end and needs padding.
     for s in stimulus_frame_to_spikes(stim_frame_of_spike[3]):
         stim_slice = mea.stimulus_slice(stimulus, stimulus_sample_rate, s, 
-                kernel_len, pad)
+                total_len, pad)
         expected_slice = np.array([
             [0, 0, 0, 1],
             [0, 0, 0, 0],
@@ -199,7 +199,7 @@ def test_stimulus_slice():
     # Sample is _at_ the end and needs padding.
     for s in stimulus_frame_to_spikes(stim_frame_of_spike[4]):
         stim_slice = mea.stimulus_slice(stimulus, stimulus_sample_rate, s, 
-                kernel_len, pad)
+                total_len, pad)
         expected_slice = np.array([
             [0, 0, 0, 0],
             [1, 0, 0, 0],
@@ -234,14 +234,14 @@ def test_save_cluster_ids(tmp_path, response_data):
     assert contents == cluster_ids
 
 
-def test_spike_windows():
+def test_spike_snippets():
     """
-    Create a fake response `DataFrame` and check that the spike windows are
+    Create a fake response `DataFrame` and check that the spike snippets are
     calculated correctly.
     """
     # Setup
-    kernel_len = 5
-    post_kernel_pad = 2
+    snippet_len = 7
+    snippet_pad = 2
     stim_sample_freq = mea.STIMULUS_FREQ * 2
     # Fake stimulus. Note that we are did our own nieve upsampling here. 
     # This is done to make the comparison easier.
@@ -275,8 +275,8 @@ def test_spike_windows():
         for kernel, spikes in data]
 
     response = pd.DataFrame(data_m, index=index, columns=['Kernel', 'Spikes'])
-    # The following is the predicted windows.
-    expected_spike_windows1 = np.array([
+    # The following is the predicted snippets.
+    expected_spike_snippets1 = np.array([
             [
                 [0,0,0,0],  # pad
                 [0,0,0,0],  # pad
@@ -314,7 +314,7 @@ def test_spike_windows():
                 [1,1,0,0], # 11
             ]
         ])         
-    expected_spike_windows2 = np.array([
+    expected_spike_snippets2 = np.array([
             [          
                 [1,0,0,0], # 7
                 [1,0,0,1], # 8
@@ -351,36 +351,38 @@ def test_spike_windows():
         print(res)
 
     # Test 1 (rec_name1)
-    spike_windows, cluster_ids = mea.spike_windows(stimulus_up, 
-            response, rec_name1, kernel_len, post_kernel_pad, stim_sample_freq)
+    spike_snippets, cluster_ids = mea.spike_snippets(stimulus_up, 
+            response, rec_name1, snippet_len, snippet_pad, stim_sample_freq)
     for idx, (spwin, cluster_ids) in enumerate(
-            zip(spike_windows, cluster_ids)):
-        np.testing.assert_equal(spwin, expected_spike_windows1[idx])
+            zip(spike_snippets, cluster_ids)):
+        np.testing.assert_equal(spwin, expected_spike_snippets1[idx])
         np.testing.assert_equal(cluster_ids, expected_cluster_ids1[idx])
 
     # Test 2 (rec_name2)
-    spike_windows, cluster_ids = mea.spike_windows(stimulus_up, 
-            response, rec_name2, kernel_len, post_kernel_pad, stim_sample_freq)
+    spike_snippets, cluster_ids = mea.spike_snippets(stimulus_up, 
+            response, rec_name2, snippet_len, snippet_pad, stim_sample_freq)
     for idx, (spwin, cluster_ids) in enumerate(
-            zip(spike_windows, cluster_ids)):
-        np.testing.assert_equal(spwin, expected_spike_windows2[idx])
+            zip(spike_snippets, cluster_ids)):
+        np.testing.assert_equal(spwin, expected_spike_snippets2[idx])
         np.testing.assert_equal(cluster_ids, expected_cluster_ids2[idx])
 
 
-def test_write_rec_windows(tmp_path, response_data, stimulus_data):
+def test_write_rec_snippets(tmp_path, response_data, stimulus_data):
     # Setup
     stimulus_zoom = 2
     orig_stimulus_freq = 20 # Hz
     stimulus_freq = orig_stimulus_freq * stimulus_zoom
     rec_id = 2
-    kernel_len = 6
-    post_kernel_pad = 1
-    kernels_per_file = 100
+    snippet_len = 7
+    snippet_pad = 1
+    empty_snippets = 0
+    snippets_per_file = 100
     up_stim = mea.upsample_stimulus(stimulus_data, stimulus_zoom)
     rec_name = mea.recording_names(response_data)[rec_id]
     # Test
     # TODO: add some more checks.
     # Currently, the test only checks that the method runs to completion.
-    mea._write_rec_windows(up_stim, response_data, rec_name, rec_id, tmp_path, 
-            kernel_len, post_kernel_pad, stimulus_freq, kernels_per_file)
+    mea._write_rec_snippets(up_stim, response_data, rec_name, rec_id, tmp_path, 
+            snippet_len, snippet_pad, stimulus_freq, empty_snippets, 
+            snippets_per_file)
 
