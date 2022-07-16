@@ -24,6 +24,11 @@ windows (snippets):
 	sampling_freq = stimulus_zoom * stimulus_freq
 	stimulus_upsampled = mea.upsample_stimulus(stimulus, factor=stimulus_zoom)
 	# Extract spike windows.
-	spike_windows = mea.spike_windows(stimulus_upsampled, response, rec_name,
-		kernel_len=5, post_kernel_pad=2, sampling_freq=sampling_freq)
+	snippets, cluster_ids = mea.labeled_spike_snippets(
+		stimulus_upsampled, 
+		response, 
+		rec_name,
+		snippet_len=5, 
+		snippet_pad=2, 
+		sampling_freq=sampling_freq)
 

@@ -1,10 +1,9 @@
-from typing import Tuple, List, BinaryIO, Dict
+from typing import Tuple, List, BinaryIO, Dict, Union
 from collections import namedtuple
 import logging
 import pathlib
 import math
 import numpy as np
-from numpy.random.mtrand import f
 import pandas as pd
 import scipy
 import scipy.signal
@@ -178,19 +177,45 @@ def upsample_stimulus(stimulus: np.ndarray, factor: int) -> np.ndarray:
     return filtered_stimulus
 
 
-def stimulus_slice(sampled_stimulus: np.ndarray, sampling_rate: float, 
-        spike: int, total_len: int, post_spike_len: int) -> np.ndarray:
+def spike_window(spikes: Union[int, np.ndarray], total_len: int, 
+        post_spike_len: int, stimulus_sample_rate:float, 
+        sensor_sample_rate: float):
     """
-    Return a subset of the stimulus around the spike point.
+    Calculate the window endpoints around a spike, in samples of the stimulus.
+    """
+    if sensor_sample_rate < stimulus_sample_rate:
+        logging.warn(f'The sensor sample rate ({sensor_sample_rate}) is lower '
+                f'than the stimulus sample rate ({stimulus_sample_rate}).')
+    if total_len < post_spike_len + 1:
+        raise ValueError(f'Total length must be at least 1 greater than the '
+                f'post-spike lengths + 1. Got total_len ({total_len}) and '
+                f'post_spike_len ({post_spike_len}).')
+    # 1. Select the sample to represent the spike.
+    stimulus_frame_of_spike =  \
+            np.floor( spikes * (stimulus_sample_rate / sensor_sample_rate)) \
+            .astype('int') 
+    # 2. Calculate the snippet start and end.
+    # The -1 appears as we include the spike sample in the snippet.
+    win_start = (stimulus_frame_of_spike + post_spike_len) - (total_len - 1)
+    win_end = stimulus_frame_of_spike + post_spike_len + 1 
+    return win_start, win_end
+
+
+def spike_snippets(stimulus: np.ndarray, spikes: np.ndarray, total_len: int, 
+        post_spike_len: int, stimulus_sample_rate: float, 
+        sensor_sample_rate: float) -> np.ndarray:
+    """
+    Return a subset of the stimulus around the spike points.
 
     Args:
-        sampled_stimulus: The stimulus, upsampled to the spike frequency.
-        sampling_rate: The sampling rate of the stimulus.
-        spike: The sensor sample in which the spike was detected.
+        stimulus: The upsampled stimulus.
+        spikes: The sensor samples in which the spikes were detected.
         total_len: The length of the snippet in stimulus frames. 
         post_spike_len: The number of frames to pad after the spike.
+        stimulus_sample_rate: The sampling rate of the stimulus.
+        sensor_sample_rate: The sampling rate of the sensor.
     Returns:
-        A Numpy array of shape (total_len, NUM_STIMULUS_LEDS).
+        A Numpy array of shape (spikes.shape[0], total_len, NUM_STIMULUS_LEDS).
 
     Note 1: The total length describes the snippet length inclusive of the post
         spike padding.
@@ -221,7 +246,6 @@ def stimulus_slice(sampled_stimulus: np.ndarray, sampling_rate: float,
                   |   0   |   0   |   0   |   1   |   0   |              
 
 
-
     Frame calculation
      ----------------
     (I'm not 100% confident that the below sample choice is correct.)
@@ -243,29 +267,70 @@ def stimulus_slice(sampled_stimulus: np.ndarray, sampling_rate: float,
         stimulus frame: |   0   |   1   |   2   |
         spike time:     |-------********--------|
     """
-    if total_len < post_spike_len + 1:
-        raise ValueError(f'Total length must be at least 1 greater than the '
-                f'post-spike lengths + 1. Got total_len ({total_len}) and '
-                f'post_spike_len ({post_spike_len}).')
-    # 1. Select the sample to represent the spike.
-    stimulus_frame_of_spike = int(spike * (sampling_rate / ELECTRODE_FREQ))
-    # 2. Calculate the snippet start and end.
-    # The -1 appears as we include the spike sample in the snippet.
-    win_start = (stimulus_frame_of_spike + post_spike_len) - (total_len - 1)
-    win_end = stimulus_frame_of_spike + post_spike_len + 1 
-    left_pad = max(-win_start, 0)
-    right_pad = max(win_end - sampled_stimulus.shape[0], 0)
-    win_start = max(win_start, 0)
-    win_end = min(win_end, sampled_stimulus.shape[0])
-    # 3. Extract the slice. 
-    # The next line is a performance bottleneck.
-    sample_slice = sampled_stimulus[win_start:win_end]
-    # 4. Pad in case the spike is too close to the start or end of the stimulus.
-    # Constant or mean padding? Probably not a big deal, I guess.
-    if left_pad or right_pad:
-        sample_slice = np.pad(sample_slice, ((left_pad, right_pad), (0, 0)), 
-                mode='constant', constant_values=0)
-    return sample_slice
+    # 1. Get the spike windows.
+    win_start, _ = spike_window(spikes, total_len, post_spike_len, 
+            stimulus_sample_rate, sensor_sample_rate)
+    # 2. Pad the stimulus incase windows go out of range.
+    if np.any(win_start < 0) or \
+            np.any(win_start >= (stimulus.shape[0] - total_len)):
+        stimulus = np.pad(stimulus, ((total_len, total_len), (0, 0)), 
+                'constant')
+        # 3. Offset the windows, which is needed due to the padding. 
+        win_start += total_len
+    # 4. Extract the slice. 
+    # The padded_stimulus is indexed by a list arrays of the form:
+    #    (win_start[0], win_start[0]+1, win_start[0]+2, ..., win_start[0]+total_len)
+    #    (win_start[1], win_start[1]+1, win_start[1]+2, ..., win_start[1]+total_len)
+    #    ...
+    #    (win_start[num_spikes-1], win_start[num_spikes-1]+1, win_start[num_spikes-1]+2, ..., win_start[num_spikes-1]+total_len)
+    snippets = stimulus[np.asarray(win_start)[:,None] + np.arange(total_len)]
+    return snippets
+
+
+def labeled_spike_snippets(up_stimulus: pd.DataFrame, response: pd.DataFrame, 
+        rec_name: str, snippet_len: int = 1000, snippet_pad: int = 200, 
+        stimulus_sample_rate: float=1000, 
+        sensor_sample_rate=ELECTRODE_FREQ) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Caluclate spike snippets for a recording, paired with the cluster ids.
+
+    Args:
+        up_stimulus: the stimulus. If you want the stimulus upsampled, do it 
+            before calling this method, as it isn't done here.
+        response: the response dataframe.
+        rec_name: the name of the recording to extract snippets for.
+        snippet_len: the length of the snippet.
+        snippet_pad: the number of timesteps to include after the spike.
+        stimulus_sample_rate: the sampling frequency of the stimulus.
+        sensor_sample_rate: the sampling frequency of the sensor.
+    
+    Returns: two np.ndarrays as a tuple. The first element contains 
+    the spike snippets, and the second element contains ids of the clusters.
+    """
+    response = response.xs(rec_name, level='Recording').reset_index(
+            level='Cell index').drop('Kernel', axis=1, errors='ignore')
+
+    def create_snippets(spikes) -> List[np.ndarray]:
+        """Create the snippets for a list of spikes."""
+        snips = []
+        w = spike_snippets(up_stimulus, spikes.compressed(), snippet_len, 
+                snippet_pad, stimulus_sample_rate, sensor_sample_rate)
+        snips.extend(w)
+        return snips
+
+    # Gather the snippets and align them with a matching array of cluster ids.
+    snippets = []
+    cluster_ids = []
+    for row_as_tuple in response.itertuples(index=False):
+        cluster_id, spikes = row_as_tuple
+        snips = create_snippets(spikes)
+        cluster_ids.extend([cluster_id,]*len(snips))
+        snippets.extend(snips)
+    snippets = np.stack(snippets)
+    cluster_ids = np.array(cluster_ids)
+    return snippets, cluster_ids
+
+
 
 
 def _save_recording_names(rec_list, save_dir) -> pathlib.Path:
@@ -339,7 +404,7 @@ def _write_rec_snippets(
     rec_dir = pathlib.Path(data_root_dir) / str(rec_id)
     rec_dir.mkdir(parents=False, exist_ok=True)
     # Extract the stimulus snippet around the spikes.
-    snippets, cluster_ids = spike_snippets(up_stimulus, response, rec_name, 
+    snippets, cluster_ids = labeled_spike_snippets(up_stimulus, response, rec_name, 
             snippet_len, snippet_pad, stimulus_freq)
     # Save the cluster ids.
     _save_cluster_ids(cluster_ids, rec_id, data_root_dir)
@@ -383,46 +448,7 @@ def _write_snippet_data_part(ids, snippets, save_dir, part_id):
     return ids_save_path, win_save_path
 
 
-def spike_snippets(up_stimulus: pd.DataFrame, response: pd.DataFrame, 
-        rec_name: str, snippet_len: int = 1000, snippet_pad: int = 200, 
-        sampling_freq: float=1000) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Extract all spike snippets for a single recording.
 
-    Args:
-        up_stimulus: the stimulus. If you want the stimulus upsampled, do it 
-            before calling this method, as it isn't done here.
-        response: the response dataframe.
-        rec_name: the name of the recording to extract snippets for.
-        snippet_len: the length of the snippet.
-        snippet_pad: the number of timesteps to include after the spike.
-        sampling_freq: the sampling frequency of the *stimulus*.
-    
-    Returns: two np.ndarrays as a tuple. The first element contains 
-    the spike snippets, and the second element contains ids of the clusters.
-    """
-    response = response.xs(rec_name, level='Recording').reset_index(
-            level='Cell index').drop('Kernel', axis=1, errors='ignore')
 
-    def create_snippets(spikes) -> List[np.ndarray]:
-        """Create the snippets for a list of spikes."""
-        snips = []
-        for spike_frame in spikes.compressed():
-            w = stimulus_slice(up_stimulus, sampling_freq, spike_frame, 
-                    snippet_len, snippet_pad)
-            snips.append(w)
-        return snips
-
-    # Gather the snippets and align them with a matching array of cluster ids.
-    snippets = []
-    cluster_ids = []
-    for row_as_tuple in response.itertuples(index=False):
-        cluster_id, spikes = row_as_tuple
-        snips = create_snippets(spikes)
-        cluster_ids.extend([cluster_id,]*len(snips))
-        snippets.extend(snips)
-    snippets = np.stack(snippets)
-    cluster_ids = np.array(cluster_ids)
-    return snippets, cluster_ids
 
 

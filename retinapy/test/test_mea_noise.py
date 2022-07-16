@@ -97,7 +97,7 @@ def test_upsample_stimulus():
         assert np.max(up_stimulus[i] - up_stimulus[i+1]) < 0.9
 
 
-def test_stimulus_slice():
+def test_spike_snippets():
     """
     Test stimulus_slice function.
 
@@ -135,79 +135,104 @@ def test_stimulus_slice():
     # Test 0
     # ------
     # Case where no padding is needed.
-    for s in stimulus_frame_to_spikes(stim_frame_of_spike[0]):
-        stim_slice = mea.stimulus_slice(stimulus, stimulus_sample_rate, s, 
-                total_len, pad)
+    snippets = mea.spike_snippets(
+            stimulus,
+            stimulus_frame_to_spikes(stim_frame_of_spike[0]),
+            total_len,
+            pad,
+            stimulus_sample_rate,
+            mea.ELECTRODE_FREQ)
+    for s in snippets:
         expected_slice = np.array([
             [0, 1, 1, 1],
             [0, 0, 1, 1],
             [0, 0, 0, 1],
             [0, 0, 0, 0],
             [1, 0, 0, 0]])
-        assert stim_slice.shape == expected_slice.shape
-        numpy.testing.assert_allclose(stim_slice, expected_slice)
+        assert s.shape == expected_slice.shape
+        numpy.testing.assert_allclose(s, expected_slice)
 
     # TODO: shouldn't they be filtered?
 
     # Test 1
     # ------
     # Sample is near the beginning and needs padding.
-    for s in stimulus_frame_to_spikes(stim_frame_of_spike[1]):
-        stim_slice = mea.stimulus_slice(stimulus, stimulus_sample_rate, s, 
-                total_len, pad)
+    snippets = mea.spike_snippets(
+            stimulus,
+            stimulus_frame_to_spikes(stim_frame_of_spike[1]),
+            total_len,
+            pad,
+            stimulus_sample_rate,
+            mea.ELECTRODE_FREQ)
+    for s in snippets:
         expected_slice = np.array([
             [0, 0, 0, 0],
             [1, 1, 1, 1],
             [1, 1, 1, 1],
             [0, 1, 1, 1],
             [0, 0, 1, 1]])
-        assert stim_slice.shape == expected_slice.shape
-        numpy.testing.assert_allclose(stim_slice, expected_slice)
+        assert s.shape == expected_slice.shape
+        numpy.testing.assert_allclose(s, expected_slice)
 
     # Test 2
     # ------
     # Sample is _at_ the beginning and needs padding.
-    for s in stimulus_frame_to_spikes(stim_frame_of_spike[2]):
-        stim_slice = mea.stimulus_slice(stimulus, stimulus_sample_rate, s, 
-                total_len, pad)
+    snippets = mea.spike_snippets(
+            stimulus,
+            stimulus_frame_to_spikes(stim_frame_of_spike[2]),
+            total_len,
+            pad,
+            stimulus_sample_rate,
+            mea.ELECTRODE_FREQ)
+    for s in snippets:
         expected_slice = np.array([
             [0, 0, 0, 0],
             [0, 0, 0, 0],
             [1, 1, 1, 1],
             [1, 1, 1, 1],
             [0, 1, 1, 1]])
-        assert stim_slice.shape == expected_slice.shape
-        numpy.testing.assert_allclose(stim_slice, expected_slice)
+        assert s.shape == expected_slice.shape
+        numpy.testing.assert_allclose(s, expected_slice)
 
     # Test 3
     # ------
     # Sample is near the end and needs padding.
-    for s in stimulus_frame_to_spikes(stim_frame_of_spike[3]):
-        stim_slice = mea.stimulus_slice(stimulus, stimulus_sample_rate, s, 
-                total_len, pad)
+    snippets = mea.spike_snippets(
+            stimulus,
+            stimulus_frame_to_spikes(stim_frame_of_spike[3]),
+            total_len,
+            pad,
+            stimulus_sample_rate,
+            mea.ELECTRODE_FREQ)
+    for s in snippets:
         expected_slice = np.array([
             [0, 0, 0, 1],
             [0, 0, 0, 0],
             [1, 0, 0, 0],
             [1, 1, 0, 0],
             [0, 0, 0, 0]])
-        assert stim_slice.shape == expected_slice.shape
-        numpy.testing.assert_allclose(stim_slice, expected_slice)
+        assert s.shape == expected_slice.shape
+        numpy.testing.assert_allclose(s, expected_slice)
 
     # Test 4
     # ------
     # Sample is _at_ the end and needs padding.
-    for s in stimulus_frame_to_spikes(stim_frame_of_spike[4]):
-        stim_slice = mea.stimulus_slice(stimulus, stimulus_sample_rate, s, 
-                total_len, pad)
+    snippets = mea.spike_snippets(
+            stimulus,
+            stimulus_frame_to_spikes(stim_frame_of_spike[4]),
+            total_len,
+            pad,
+            stimulus_sample_rate,
+            mea.ELECTRODE_FREQ)
+    for s in snippets:
         expected_slice = np.array([
             [0, 0, 0, 0],
             [1, 0, 0, 0],
             [1, 1, 0, 0],
             [0, 0, 0, 0],
             [0, 0, 0, 0]])
-        assert stim_slice.shape == expected_slice.shape
-        numpy.testing.assert_equal(stim_slice, expected_slice)
+        assert s.shape == expected_slice.shape
+        numpy.testing.assert_equal(s, expected_slice)
 
 
 def test_save_recording_names(tmp_path, response_data):
@@ -234,7 +259,7 @@ def test_save_cluster_ids(tmp_path, response_data):
     assert contents == cluster_ids
 
 
-def test_spike_snippets():
+def test_labeled_spike_snippets():
     """
     Create a fake response `DataFrame` and check that the spike snippets are
     calculated correctly.
@@ -351,7 +376,7 @@ def test_spike_snippets():
         print(res)
 
     # Test 1 (rec_name1)
-    spike_snippets, cluster_ids = mea.spike_snippets(stimulus_up, 
+    spike_snippets, cluster_ids = mea.labeled_spike_snippets(stimulus_up, 
             response, rec_name1, snippet_len, snippet_pad, stim_sample_freq)
     for idx, (spwin, cluster_ids) in enumerate(
             zip(spike_snippets, cluster_ids)):
@@ -359,7 +384,7 @@ def test_spike_snippets():
         np.testing.assert_equal(cluster_ids, expected_cluster_ids1[idx])
 
     # Test 2 (rec_name2)
-    spike_snippets, cluster_ids = mea.spike_snippets(stimulus_up, 
+    spike_snippets, cluster_ids = mea.labeled_spike_snippets(stimulus_up, 
             response, rec_name2, snippet_len, snippet_pad, stim_sample_freq)
     for idx, (spwin, cluster_ids) in enumerate(
             zip(spike_snippets, cluster_ids)):
