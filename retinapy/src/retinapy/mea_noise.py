@@ -331,6 +331,64 @@ def labeled_spike_snippets(up_stimulus: pd.DataFrame, response: pd.DataFrame,
     return snippets, cluster_ids
 
 
+def generate_fake_spikes(spikes, num_fake_per_real, 
+        target_sample_rate,
+		sensor_sample_rate, 
+        min_dist_to_real_spike,
+		rng_seed=123) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Genrate fake spikes.
+
+    Spread the spikes over the duration of the recording. Don't generate
+    a fake spike too close to a real spike.
+
+    Between every two spikes, `num_fake_per_real` spikes will be generated.
+    Thus, total number of fake spikes will be 
+
+        len(spikes) * `num_fake_per_real` -1.
+    
+    Some details:
+
+        spikes:     |--------*------------*----------------------*-----------|
+        intervals shown by |-----| in which we can create fake spikes:
+                     |       * |--------| * |------------------| *           |
+
+    There is a buffer between the spikes and the intervals, this is
+    the `min_dist_to_real_spike`.
+
+    Within the intervals, we will try to create `snippets_per_spike` number
+    of fake spikes. From these spikes, snippets will be created. 
+
+    The spikes are not chosen evenly within the intervals, but rather
+    there is some jitter. This is what the `rng_seed` parameter is for.
+
+    Args:
+        spikes: a sorted (ascending) list of spikes, in sensor samples.
+        num_fake_per_real: the number of fake spikes to generate between every
+            two real spikes.
+        target_sample_rate: the target sampling rate.
+        sensor_sapmle_rate: the sampling rate of the sensor.
+    """
+    if len(spikes) < 2:
+        raise ValueError(f'Need at least two spikes. Got ({len(spikes)}).')
+	# Convert spikes to the target sample space.
+    
+    spikes = np.ndarray(spikes) * (target_sample_rate / sensor_sample_rate)
+
+    intervals = np.stack(spikes[:-1] + min_dist_to_real_spike, 
+            spikes[1:] - min_dist_to_real_spike)
+    sub_intervals = []
+    def split_interval(interval, n):
+        """Split an interval into n subintervals, of roughly equal size."""
+        d, m = divmod(interval, n)
+        return [(i*d+min(i, m), (i+1)*d+min(i+1, m)) for i in range(n)]
+    for i in intervals:
+        sub_intervals.extend(split_interval(i, num_fake_per_real))
+
+    rng = np.random.default_rng(rng_seed)
+    fake_spikes = rng.random.integers(*np.stack(sub_intervals, axis=1), 
+            endpoints=True)
+    return fake_spikes
 
 
 def _save_recording_names(rec_list, save_dir) -> pathlib.Path:
