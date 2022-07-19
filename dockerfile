@@ -1,4 +1,6 @@
-FROM pytorch/pytorch:latest
+FROM nvidia/cuda:11.5.1-base-ubuntu20.04
+#FROM pytorch/pytorch:latest
+
 # I edit the nvimrc too often for it to be a base image.
 # FROM nvimi
 ARG USER_ID=1001
@@ -10,14 +12,68 @@ ARG PROJ_ROOT=/$USER
 # variable type, I'd use it instead.
 ARG NEOVIM_DIR=/home/$USER/.config/nvim
 
-RUN addgroup --gid $GROUP_ID $USER
+USER root
+RUN groupadd --gid $GROUP_ID $USER
 RUN adduser --disabled-password --gecos '' --uid $USER_ID --gid $GROUP_ID $USER
+
+USER root
+ARG PROJ_ROOT=/app
+
+RUN mkdir $PROJ_ROOT && chown $USER $PROJ_ROOT
+WORKDIR $PROJ_ROOT	
+
+# These next two folders will be where we will mount our local data and out
+# directories. We create them manually (automatic creation when mounting will
+# create them as being owned by root, and then our program cannot use them).
+RUN mkdir data && chown $USER data
+RUN mkdir out && chown $USER out
+
 # When switching to mounting the whole project as a volume, it
 # seemed wrong to mount it at the existing /home/app directory. So,
 # going one level deeper. I think an alternative is to just work from
 # /app, but I think some programs like JupyterLab have some issues
 # when running from outside the home tree.
 WORKDIR /home/$USER
+
+# tzdata configuration stops for an interactive prompt without the env var.
+# https://serverfault.com/questions/949991/how-to-install-tzdata-on-a-ubuntu-docker-image
+# https://stackoverflow.com/questions/51023312/docker-having-issues-installing-apt-utils/56569081#56569081
+ENV TZ=Europe/London
+RUN DEBIAN_FRONTEND=noninteractive \
+	apt-get update && apt-get install --no-install-recommends -y \
+	 tzdata
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+	 curl \
+	 ca-certificates \
+	 git \
+	 libsm6 \
+	 libxext6 \
+     libxrender-dev \
+	 ffmpeg && \
+	 rm -rf /var/lib/apt/lists/*
+
+###############################################################################
+#
+# Conda
+# 	
+###############################################################################
+
+# Set up the Conda environment (using Miniforge)
+ENV PATH=/home/$USER/mambaforge/bin:$PATH
+#COPY environment.yml /app/environment.yml
+RUN curl -sLo ./mambaforge.sh https://github.com/conda-forge/miniforge/releases/download/4.12.0-2/Mambaforge-4.12.0-2-Linux-x86_64.sh \
+ && chmod +x ./mambaforge.sh \
+ && ./mambaforge.sh -b -p ./mambaforge \
+ && rm ./mambaforge.sh \
+# && mamba env update -n base -f /app/environment.yml \
+# && rm /app/environment.yml \
+ && mamba clean -ya
+
+###############################################################################
+# /Conda
+###############################################################################
+
 
 ###############################################################################
 #
@@ -31,9 +87,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
 	neovim  \
-	git \
+	gcc \
+	make \
+	autoconf \
+	automake \
 	locales \
-	curl && \
+	# For airline font support
+	fonts-powerline && \
 	rm -rf /var/lib/apt/lists/*
 
 RUN pip install --upgrade pip && \
@@ -48,71 +108,29 @@ ENV LC_ALL en_US.UTF-8
 RUN conda install --yes -c conda-forge nodejs'>=12.12.0' --repodata-fn=repodata.json
 
 ###############################################################################
-# 
-# - Neovim
-#   - ctags
-#
-# more info:
-# 	https://github.com/universal-ctags/ctags
-###############################################################################
-RUN apt-get update && apt-get install -y --no-install-recommends \
-	gcc \
-	make \
-	pkg-config \
-	autoconf \ 
-	automake \
-	python3-docutils \
-	libseccomp-dev \
-	libjansson-dev \
-	libyaml-dev \
-	# For airline font support
-	fonts-powerline && \
-	rm -rf /var/lib/apt/lists/*
-
-RUN git clone https://github.com/universal-ctags/ctags.git  && \
-	cd ctags && \
-	./autogen.sh && \
-	./configure && \ 
-	make && \
-	make install && \
-	cd ../  
-
-###############################################################################
-# \ctags
 # \Neovim
 ###############################################################################
 
-USER root
-ARG PROJ_ROOT=/app
-
-RUN mkdir $PROJ_ROOT && chown $USER $PROJ_ROOT
-WORKDIR $PROJ_ROOT	
-
-# These next two folders will be where we will mount our local data and out
-# directories. We create them manually (automatic creation when mounting will
-# create them as being owned by root, and then our program cannot use them).
-RUN mkdir data && chown $USER data
-RUN mkdir out && chown $USER out
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-	 libsm6 \
-	 libxext6 \
-     libxrender-dev \
-	 ffmpeg && \
-	 rm -rf /var/lib/apt/lists/*
-
 RUN conda config --add channels conda-forge 
 RUN conda install --yes \
+	python=3.9 \
+	pip \
+	pytest \
+	numpy \
+	pandas \
+	scipy \
+	pytorch \
+	jupyterlab  \
+	matplotlib \
+	plotly \
 	build \
 	twine \
-	matplotlib \
-	pandas \
 	h5py \
-	jupyterlab  \
-    ipykernel>=6 \
-    xeus-python \
+    #ipykernel>=6 \
+    # xeus-python \
     ipywidgets && \
 	conda clean -ya
+
 RUN conda install -c conda-forge jupyterlab-spellchecker
 #RUN jupyter labextension install jupyterlab_vim
 # From: https://stackoverflow.com/questions/67050036/enable-jupyterlab-extensions-by-default-via-docker
@@ -130,18 +148,11 @@ RUN pip install \
         opencv-python \
 		jupyterlab-vim \
         icecream \
-		deprecated \
 		bidict \ 
-		pytest \
-		ipyplot \
 		einops \
 		ipympl \
-		pickle5 \
-		plotly \
-		scipy \
 		cprofilev \
 		mypy 
-
 
 ###############################################################################
 # Neovim
