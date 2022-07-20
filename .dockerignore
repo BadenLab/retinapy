@@ -4,5 +4,6 @@
 resources
 data
 out
+notebooks
 .pytest_cache
 
