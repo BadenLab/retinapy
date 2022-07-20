@@ -1,39 +1,134 @@
-from numpy.random.mtrand import sample
-import pytest
-import retinapy.mea_noise as mea
+from collections import namedtuple
+import math
+import pickle
+
 import numpy as np
 import numpy.ma as ma
 import numpy.testing
 import pandas as pd
-import pickle
+
+import pytest
+import retinapy.mea_noise as mea
 
 
-FF_STIMULUS_PATH = './data/ff_noise.h5'
+FF_NOISE_PATTERN_PATH = './data/ff_noise.h5'
 FF_SPIKE_RESPONSE_PATH = './data/ff_spike_response.pickle'
+FF_SPIKE_RESPONSE_PATH_ZIP = './data/ff_spike_response.pickle.zip'
+FF_RECORDED_NOISE_PATH = './data/ff_recorded_noise.pickle'
+FF_RECORDED_NOISE_PATH_ZIP = './data/ff_recorded_noise.pickle.zip'
 
 
-def test_load_fullfield_stimulus():
-    noise = mea.load_fullfield_stimulus(FF_STIMULUS_PATH)
+class ExperimentData:
+
+	def __init__(self, rec_id, stimulus_pattern, response, recorded_stimulus,
+			downsample_factor = 18):
+		self.rec_id = rec_id
+		self.stimulus_pattern = stimulus_pattern
+		self.response = response
+		self.recorded_stimulus = recorded_stimulus
+		self.downsample_factor = downsample_factor
+		self._rec_name = None
+		self._stimulus = None
+		self._stimulus_sample_rate = None
+		self._sensor_sample_rate = None
+	
+	@property
+	def stimulus(self) -> np.ndarray:
+		if not self._stimulus:
+			stimlus, freq = mea.decompress_stimulus(
+					self.stimulus_pattern, 
+					self.recorded_stimulus, 
+					self.rec_name,
+					self.downsample_factor)
+			self._stimulus = stimlus
+			self._stimulus_sample_rate = freq
+		return self._stimulus
+
+	@property
+	def stimulus_sample_rate(self) -> float:
+		if not self._stimulus_sample_rate:
+			assert not self._stimulus
+			self.stimulus
+			assert self._stimulus_sample_rate
+		return self._stimulus_sample_rate
+
+	@property
+	def rec_name(self) -> str:
+		if not self._rec_name:
+			self._rec_name = mea.recording_names(self.response)[self.rec_id]
+			assert self._rec_name
+		return self._rec_name
+
+	@property
+	def sensor_sample_rate(self) -> float:
+		if not self._sensor_sample_rate:
+			self._sensor_sample_rate = self.recorded_stimulus.xs('Recording',
+					self.rec_name).iloc[0]['Sampling_Freq']
+			assert self._sensor_sample_rate
+		self._sensor_sample_rate
+		return self._sensor_sample_rate
+
+
+def test_load_stimulus_pattern():
+    noise = mea.load_stimulus_pattern(FF_NOISE_PATTERN_PATH)
     known_shape = (24000, 4)
     assert noise.shape == known_shape
 
 
 def test_load_response():
-    response = mea.load_response(FF_SPIKE_RESPONSE_PATH)
-    known_index_names = ['Cell index', 'Stimulus ID', 'Recording']
-    assert response.index.names == known_index_names
-    known_shape = (4417, 2)
-    assert response.shape == known_shape
+    for path in (FF_SPIKE_RESPONSE_PATH, FF_SPIKE_RESPONSE_PATH_ZIP):
+        response = mea.load_response(path)
+        known_index_names = ['Cell index', 'Stimulus ID', 'Recording']
+        assert response.index.names == known_index_names
+        known_shape = (4417, 2)
+        assert response.shape == known_shape
+
+
+def test_load_recorded_stimulus():
+    for path in (FF_RECORDED_NOISE_PATH, FF_RECORDED_NOISE_PATH_ZIP):
+        res = mea.load_recorded_stimulus(path)
+        known_index_names = ['Stimulus_index', 'Recording']
+        assert res.index.names == known_index_names
+        known_shape = (18, 8)
+        assert res.shape == known_shape
 
 
 @pytest.fixture
-def stimulus_data():
-    return mea.load_fullfield_stimulus(FF_STIMULUS_PATH)
+def stimulus_pattern():
+    return mea.load_stimulus_pattern(FF_NOISE_PATTERN_PATH)
+
+
+@pytest.fixture
+def recorded_stimulus():
+    return mea.load_recorded_stimulus(FF_RECORDED_NOISE_PATH)
 
 
 @pytest.fixture
 def response_data():
     return mea.load_response(FF_SPIKE_RESPONSE_PATH)
+
+
+@pytest.fixture
+def exp0(stimulus_pattern, recorded_stimulus, response_data):
+	exp = ExperimentData(0, stimulus_pattern,
+			response_data, recorded_stimulus)
+	return exp
+
+
+@pytest.fixture
+def exp12(stimulus_pattern, recorded_stimulus, response_data):
+	exp = ExperimentData(12, stimulus_pattern, response_data, recorded_stimulus)
+	return exp
+
+
+@pytest.fixture
+def decimated_stimulus_freq():
+    stim, freq = mea.decompress_stimulus(
+            mea.load_stimulus_pattern(FF_NOISE_PATTERN_PATH),
+            mea.load_recorded_stimulus(FF_RECORDED_NOISE_PATH),
+            'Chicken_17_08_21_Phase_00',
+            18)
+    return stim, freq
 
 
 def test_recording_names(response_data):
@@ -60,41 +155,70 @@ def test_recording_names(response_data):
 
 
 def test_cluster_ids(response_data):
-    known_list = [12, 13, 14, 15, 17, 25, 28, 29, 34, 44, 45, 50, 60, 61, 80, 
-				  82, 99, 114, 119, 149, 217, 224, 287, 317, 421, 553, 591]
+    known_list = [12, 13, 14, 15, 17, 25, 28, 29, 34, 44, 45, 50, 60, 61, 80,
+                  82, 99, 114, 119, 149, 217, 224, 287, 317, 421, 553, 591]
     recording_name = 'Chicken_21_08_21_Phase_00'
     cluster_ids = mea.cluster_ids(response_data, recording_name)
     assert cluster_ids == known_list
 
 
-def test_upsample_stimulus_exceptions():
-    # Expect exception if zoom is less than 1:
-    with pytest.raises(ValueError):
-        mea.upsample_stimulus(np.array([0, 1, 0, 0, 1]), 0)
-    with pytest.raises(ValueError):
-        mea.upsample_stimulus(np.array([0, 1, 0, 0, 1]), -1)
-    # Expect exception if zoom is not integer.
-    with pytest.raises(ValueError):
-        mea.upsample_stimulus(np.array([0, 1, 0, 0, 1]), 1.5)
+def test_decompress_stimulus(stimulus_pattern, recorded_stimulus):
+    # Test 1
+    # No downsampling.
+    decomp, new_freq = mea.decompress_stimulus(
+            stimulus_pattern, recorded_stimulus,
+            'Chicken_17_08_21_Phase_00',
+            downsample_factor=1)
+    known_length = 16071532
+    assert decomp.shape == (known_length, mea.NUM_STIMULUS_LEDS)
+    assert new_freq == pytest.approx(mea.ELECTRODE_FREQ)
+
+    # Test 2
+    # Downsample at x18.
+    downsample_factor = 18
+    orig_len = 16071532
+    expected_decimated_len = math.ceil(orig_len / downsample_factor)
+    orig_freq = mea.ELECTRODE_FREQ
+    expected_downsampled_freq = orig_freq / downsample_factor
+    decomp, new_freq = mea.decompress_stimulus(
+            stimulus_pattern,
+            recorded_stimulus,
+            'Chicken_17_08_21_Phase_00',
+            downsample_factor)
+    assert decomp.shape == (expected_decimated_len, mea.NUM_STIMULUS_LEDS)
+    # Note: the sampling frequency in the Pandas dataframe isn't as accurate
+    # as the ELECTRODE_FREQ value.
+    assert new_freq == pytest.approx(expected_downsampled_freq)
 
 
-def test_upsample_stimulus():
-    square_stimulus_RGBU = np.array(
-            [[0, 0, 1, 1], 
-             [1, 1, 0, 0], 
-             [0, 0, 1, 1], 
-             [1, 1, 0, 0], 
-             [0, 0, 1, 1], 
-             [1, 1, 0, 0], 
-             [0, 0, 1, 1], 
-             [1, 1, 0, 0]])
-    up_stimulus = mea.upsample_stimulus(square_stimulus_RGBU, factor=2)
-    expected_shape = (16, 4)
-    assert up_stimulus.shape == expected_shape
-    # No hard edges:
-    for i in range(up_stimulus.shape[0]-1):
-        mdiff = up_stimulus[i] - up_stimulus[i+1]
-        assert np.max(up_stimulus[i] - up_stimulus[i+1]) < 0.9
+def test_downsample_stimulus():
+    # Setup
+    orig_signal = np.array([0, 0, 0, 0, 0, 0, 0, 0,
+                            1, 1, 1, 1, 1, 1, 1, 1,
+                            0, 0, 0, 0, 0, 0, 0, 0,
+                            1, 1, 1, 1, 1, 1, 1, 1,
+                            0, 0, 0, 0, 0, 0, 0, 0,
+                            1, 1, 1, 1, 1, 1, 1, 1])
+    # TODO: is this satisfactory?
+    expected_decimate_by_2 = np.array(
+            [0.012, -0.019,  0.029, -0.060,  
+             0.739,  1.085,  0.937,  1.081,  
+             0.249, -0.076,  0.058, -0.077,
+             0.750,  1.077,  0.942,  1.077,  
+             0.250, -0.077,  0.058, -0.076,  
+             0.749,  1.081,  0.937,  1.085])
+    expected_decimate_by_4 = np.array(
+            [0.030, -0.065,  0.595,  1.148,  
+             0.364, -0.120,  0.620,  1.136,  
+             0.369, -0.120,  0.614,  1.148])
+
+    # Test
+    decimated_by_2 = mea.downsample_stimulus(orig_signal, 2)
+    numpy.testing.assert_allclose(decimated_by_2, 
+            expected_decimate_by_2, atol=0.002)
+    decimated_by_4 = mea.downsample_stimulus(orig_signal, 4)
+    numpy.testing.assert_allclose(decimated_by_4, expected_decimate_by_4,
+            atol=0.002)
 
 
 def test_spike_snippets():
@@ -138,10 +262,10 @@ def test_spike_snippets():
     snippets = mea.spike_snippets(
             stimulus,
             stimulus_frame_to_spikes(stim_frame_of_spike[0]),
-            total_len,
-            pad,
             stimulus_sample_rate,
-            mea.ELECTRODE_FREQ)
+            mea.ELECTRODE_FREQ,
+            total_len,
+            pad)
     for s in snippets:
         expected_slice = np.array([
             [0, 1, 1, 1],
@@ -160,10 +284,10 @@ def test_spike_snippets():
     snippets = mea.spike_snippets(
             stimulus,
             stimulus_frame_to_spikes(stim_frame_of_spike[1]),
-            total_len,
-            pad,
             stimulus_sample_rate,
-            mea.ELECTRODE_FREQ)
+            mea.ELECTRODE_FREQ,
+            total_len,
+            pad)
     for s in snippets:
         expected_slice = np.array([
             [0, 0, 0, 0],
@@ -180,10 +304,10 @@ def test_spike_snippets():
     snippets = mea.spike_snippets(
             stimulus,
             stimulus_frame_to_spikes(stim_frame_of_spike[2]),
-            total_len,
-            pad,
             stimulus_sample_rate,
-            mea.ELECTRODE_FREQ)
+            mea.ELECTRODE_FREQ,
+            total_len,
+            pad)
     for s in snippets:
         expected_slice = np.array([
             [0, 0, 0, 0],
@@ -200,10 +324,10 @@ def test_spike_snippets():
     snippets = mea.spike_snippets(
             stimulus,
             stimulus_frame_to_spikes(stim_frame_of_spike[3]),
-            total_len,
-            pad,
             stimulus_sample_rate,
-            mea.ELECTRODE_FREQ)
+            mea.ELECTRODE_FREQ,
+            total_len,
+            pad)
     for s in snippets:
         expected_slice = np.array([
             [0, 0, 0, 1],
@@ -220,10 +344,10 @@ def test_spike_snippets():
     snippets = mea.spike_snippets(
             stimulus,
             stimulus_frame_to_spikes(stim_frame_of_spike[4]),
-            total_len,
-            pad,
             stimulus_sample_rate,
-            mea.ELECTRODE_FREQ)
+            mea.ELECTRODE_FREQ,
+            total_len,
+            pad)
     for s in snippets:
         expected_slice = np.array([
             [0, 0, 0, 0],
@@ -267,10 +391,10 @@ def test_labeled_spike_snippets():
     # Setup
     snippet_len = 7
     snippet_pad = 2
-    stim_sample_freq = mea.STIMULUS_FREQ * 2
+    stim_sample_freq = 40
     # Fake stimulus. Note that we are did our own nieve upsampling here. 
     # This is done to make the comparison easier.
-    stimulus_up = np.array([
+    stimulus = np.array([
             [0,0,0,1], # 0
             [0,0,1,0], # 1
             [0,0,1,1], # 2
@@ -293,13 +417,16 @@ def test_labeled_spike_snippets():
             (17, 1, 'Chicken_04_08_21_Phase_02'),
             (40, 1, 'Chicken_04_08_21_Phase_02')), 
             names=['Cell index', 'Stimulus ID', 'Recording'])
-    data = [(None, [820, 3648]), (None, [3044, 4067]), (None, [5239,]), 
+    # Spike data has format: [(Kernel, Spikes),...]
+    # We only care about the spikes, so we can leave the kernels as None.
+    spike_data = [(None, [820, 3648]), (None, [3044, 4067]), (None, [5239,]), 
             (None, [4430,])]
     # Convert the data to use masked arrays.
-    data_m = [(kernel, ma.array(spikes, mask=np.zeros(len(spikes)))) 
-        for kernel, spikes in data]
+    spike_data_m = [(kernel, ma.array(spikes, mask=np.zeros(len(spikes)))) 
+        for kernel, spikes in spike_data]
 
-    response = pd.DataFrame(data_m, index=index, columns=['Kernel', 'Spikes'])
+    response = pd.DataFrame(spike_data_m, index=index, 
+            columns=['Kernel', 'Spikes'])
     # The following is the predicted snippets.
     expected_spike_snippets1 = np.array([
             [
@@ -365,49 +492,47 @@ def test_labeled_spike_snippets():
     # The spike times were calculated according to the following function.
     # Then, the slices of the stimulus were manually copied, and zoomed by 2,
     # as the stimulus was sampled at 40 Hz (twice the stimulus frequency).
+    # Leaving the function here in case the test arrays need to be regenerated.
     def create_ans():
         def spike_to_frame(sp):
             return sp * (stim_sample_freq / mea.ELECTRODE_FREQ)
         res = []
-        for d in data:
+        for d in spike_data:
             d_spikes = d[1]
             for sp in d_spikes:
                 res.append(spike_to_frame(sp))
         print(res)
 
     # Test 1 (rec_name1)
-    spike_snippets, cluster_ids = mea.labeled_spike_snippets(stimulus_up, 
-            response, rec_name1, snippet_len, snippet_pad, stim_sample_freq)
+    spike_snippets, cluster_ids = mea.labeled_spike_snippets(stimulus, 
+            response, rec_name1, stim_sample_freq, mea.ELECTRODE_FREQ, 
+            snippet_len, snippet_pad)
     for idx, (spwin, cluster_ids) in enumerate(
             zip(spike_snippets, cluster_ids)):
         np.testing.assert_equal(spwin, expected_spike_snippets1[idx])
         np.testing.assert_equal(cluster_ids, expected_cluster_ids1[idx])
 
     # Test 2 (rec_name2)
-    spike_snippets, cluster_ids = mea.labeled_spike_snippets(stimulus_up, 
-            response, rec_name2, snippet_len, snippet_pad, stim_sample_freq)
+    spike_snippets, cluster_ids = mea.labeled_spike_snippets(stimulus, 
+            response, rec_name2, stim_sample_freq, mea.ELECTRODE_FREQ, 
+            snippet_len, snippet_pad)
     for idx, (spwin, cluster_ids) in enumerate(
             zip(spike_snippets, cluster_ids)):
         np.testing.assert_equal(spwin, expected_spike_snippets2[idx])
         np.testing.assert_equal(cluster_ids, expected_cluster_ids2[idx])
 
 
-def test_write_rec_snippets(tmp_path, response_data, stimulus_data):
+def test_write_rec_snippets(tmp_path, exp12):
     # Setup
-    stimulus_zoom = 2
-    orig_stimulus_freq = 20 # Hz
-    stimulus_freq = orig_stimulus_freq * stimulus_zoom
-    rec_id = 2
     snippet_len = 7
     snippet_pad = 1
     empty_snippets = 0
     snippets_per_file = 100
-    up_stim = mea.upsample_stimulus(stimulus_data, stimulus_zoom)
-    rec_name = mea.recording_names(response_data)[rec_id]
+
     # Test
     # TODO: add some more checks.
     # Currently, the test only checks that the method runs to completion.
-    mea._write_rec_snippets(up_stim, response_data, rec_name, rec_id, tmp_path, 
-            snippet_len, snippet_pad, stimulus_freq, empty_snippets, 
-            snippets_per_file)
+    mea._write_rec_snippets(exp12.stimulus, exp12.response, exp12.rec_name, 
+            exp12.rec_id, tmp_path, snippet_len, snippet_pad, 
+			exp12.stimulus_sample_rate, empty_snippets, snippets_per_file)
 
