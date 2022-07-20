@@ -16,9 +16,6 @@ USER root
 RUN groupadd --gid $GROUP_ID $USER
 RUN adduser --disabled-password --gecos '' --uid $USER_ID --gid $GROUP_ID $USER
 
-USER root
-ARG PROJ_ROOT=/app
-
 RUN mkdir $PROJ_ROOT && chown $USER $PROJ_ROOT
 WORKDIR $PROJ_ROOT	
 
@@ -27,13 +24,6 @@ WORKDIR $PROJ_ROOT
 # create them as being owned by root, and then our program cannot use them).
 RUN mkdir data && chown $USER data
 RUN mkdir out && chown $USER out
-
-# When switching to mounting the whole project as a volume, it
-# seemed wrong to mount it at the existing /home/app directory. So,
-# going one level deeper. I think an alternative is to just work from
-# /app, but I think some programs like JupyterLab have some issues
-# when running from outside the home tree.
-WORKDIR /home/$USER
 
 # tzdata configuration stops for an interactive prompt without the env var.
 # https://serverfault.com/questions/949991/how-to-install-tzdata-on-a-ubuntu-docker-image
@@ -64,7 +54,7 @@ ENV PATH=/home/$USER/mambaforge/bin:$PATH
 #COPY environment.yml /app/environment.yml
 RUN curl -sLo ./mambaforge.sh https://github.com/conda-forge/miniforge/releases/download/4.12.0-2/Mambaforge-4.12.0-2-Linux-x86_64.sh \
  && chmod +x ./mambaforge.sh \
- && ./mambaforge.sh -b -p ./mambaforge \
+ && ./mambaforge.sh -b -p /home/$USER/mambaforge \
  && rm ./mambaforge.sh \
 # && mamba env update -n base -f /app/environment.yml \
 # && rm /app/environment.yml \
@@ -92,6 +82,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 	autoconf \
 	automake \
 	locales \
+	# For ripgrep, which is for telescope
+	ripgrep \
+	# For fd-find
+	fd-find \
 	# For airline font support
 	fonts-powerline && \
 	rm -rf /var/lib/apt/lists/*
