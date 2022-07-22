@@ -14,25 +14,26 @@ windows (snippets):
 ```
 
 >>> import retinapy.mea_noise as mea
->>> stimulus = mea.load_fullfield_stimulus('./data/ff_noise.h5')
+>>> rec_name = 'Chicken_17_08_21_Phase_00'
+>>> stimulus_pattern = mea.load_stimulus_pattern('./data/ff_noise.h5')
+>>> recorded_stimulus = mea.load_recorded_stimulus('./data/ff_recorded_noise.pickle')
 >>> response = mea.load_response('./data/ff_spike_response.pickle')
->>> # Choose one of the recordings.
->>> rec_name = mea.recording_names(response)[0]
->>> # Zoom the stimulus.
->>> stimulus_freq = 20
->>> stimulus_zoom = 2
->>> sample_freq = stimulus_zoom * stimulus_freq
->>> stimulus_upsampled = mea.upsample_stimulus(stimulus, factor=stimulus_zoom)
+>>> # Create an array representing the played stimulus. It can be downsampled.
+>>> # I'm choosing 18, as this gives ~1000 timestep per second (931).
+>>> downsample_factor = 18
+>>> stimulus, freq = mea.decompress_stimulus(stimulus_pattern, 
+...    recorded_stimulus, rec_name, downsample_factor)
 >>> # Extract spike windows.
 >>> snippets, cluster_ids = mea.labeled_spike_snippets(
-...		stimulus_upsampled, 
-...		response, 
-...		rec_name,
-...		snippet_len=5, 
-...		snippet_pad=2, 
-...		stimulus_sample_rate=sample_freq)
+...   stimulus, 
+...   response, 
+...   'Chicken_17_08_21_Phase_00',
+...   freq,
+...   mea.ELECTRODE_FREQ,
+...   snippet_len=5, 
+...   snippet_pad=2)
 >>> print(snippets.shape)
-(215589, 5, 4)
+(215941, 5, 4)
 
 ```
 
