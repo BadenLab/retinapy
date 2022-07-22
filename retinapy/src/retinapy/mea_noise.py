@@ -140,11 +140,19 @@ def _decompress_stimulus(
     """TODO: take in the stimulus trigger points."""
     logging.info('Starting: decompressing stimulus. Resulting shape '
                  f'({out_array.shape}).')
+    if trigger_events[0] != 0:
+        raise ValueError('The trigger events are expected to start at zero, '
+                f'but the first trigger was at ({trigger_events[0]}).')
+    if len(trigger_events) > len(stimulus_pattern):
+        raise ValueError('Recorded stimulus is longer than the stimulus '
+                f'pattern. ({len(trigger_events)} > {len(stimulus_pattern)})')
     # If this becomes a bottleneck, there are some tricks to reach for:
     # https://stackoverflow.com/questions/60049171/fill-values-in-numpy-array-that-are-between-a-certain-value
     slices = np.stack((trigger_events[:-1], trigger_events[1:]), axis=1)
     for idx, s in enumerate(slices):
         out_array[np.arange(*s)] = stimulus_pattern[idx]
+    last_trigger = trigger_events[-1]
+    out_array[last_trigger:] = stimulus_pattern[len(slices)]
     logging.info(f'Finished: decompressing stimulus. '
                  f'The last trigger was at ({trigger_events[-1]}) making its '
                  f'duration ({out_array.shape[0]} - {trigger_events[-1]} = '
@@ -152,14 +160,25 @@ def _decompress_stimulus(
     return out_array
 
 
-def decompress_spikes(spikes: np.ma.MaskedArray, num_sensor_samples: int, 
+def decompress_spikes(
+        spikes: Union[np.ndarray, np.ma.MaskedArray], 
+        num_sensor_samples: int, 
         downsample_factor: int = 1) -> np.ndarray:
-    spikes = spikes.compressed()
-    out = np.empty(
-            shape=[math.ceil(num_sensor_samples/downsample_factor),], dtype=int)
-    spikes = np.floor_divide(spikes, downsample_factor)
-    out[spikes] = 1
-    return spikes
+    """
+    Fills an True/False array depending on whether a spike occurred.
+
+    The output has one element for each downsampled timestep.
+    """
+    if np.ma.isMaskedArray(spikes):
+        spikes = spikes.compressed()
+    downsampled_spikes = np.floor_divide(spikes, downsample_factor)
+    if np.min(np.diff(downsampled_spikes)) < 1:
+        raise ValueError('Multiple spikes occured in the same bucket; spikes '
+                'are happening faster than the sampling rate.')
+    res = np.zeros(shape=[math.ceil(num_sensor_samples/downsample_factor),],
+            dtype=bool)
+    res[downsampled_spikes] = True
+    return res
 
 
 def factors_sorted_by_count(n, limit) -> List[Tuple[int,...]]:
