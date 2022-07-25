@@ -1,4 +1,4 @@
-from collections import namedtuple
+import logging
 import math
 import pickle
 
@@ -8,7 +8,7 @@ import numpy.testing
 import pandas as pd
 
 import pytest
-import retinapy.mea_noise as mea
+import retinapy.mea as mea
 
 
 FF_NOISE_PATTERN_PATH = "./data/ff_noise.h5"
@@ -16,83 +16,6 @@ FF_SPIKE_RESPONSE_PATH = "./data/ff_spike_response.pickle"
 FF_SPIKE_RESPONSE_PATH_ZIP = "./data/ff_spike_response.pickle.zip"
 FF_RECORDED_NOISE_PATH = "./data/ff_recorded_noise.pickle"
 FF_RECORDED_NOISE_PATH_ZIP = "./data/ff_recorded_noise.pickle.zip"
-
-
-class ExperimentData:
-    def __init__(
-        self,
-        rec_name,
-        stimulus_pattern,
-        response,
-        recorded_stimulus,
-        downsample_factor=18,
-    ):
-        self.rec_name = rec_name
-        self.stimulus_pattern = stimulus_pattern
-        self.response = response
-        self.recorded_stimulus = recorded_stimulus
-        self.downsample_factor = downsample_factor
-        self._rec_id = None
-        self._stimulus = None
-        self._stimulus_sample_rate = None
-        self._sensor_sample_rate = None
-
-    @property
-    def stimulus(self) -> np.ndarray:
-        if not self._stimulus:
-            stimlus, freq = mea.decompress_stimulus(
-                self.stimulus_pattern,
-                self.recorded_stimulus,
-                self.rec_name,
-                self.downsample_factor,
-            )
-            self._stimulus = stimlus
-            self._stimulus_sample_rate = freq
-        return self._stimulus
-
-    @property
-    def stimulus_sample_rate(self) -> float:
-        if not self._stimulus_sample_rate:
-            assert not self._stimulus
-            self.stimulus
-            assert self._stimulus_sample_rate
-        return self._stimulus_sample_rate
-
-    @property
-    def rec_id(self) -> int:
-        if not self._rec_id:
-            self._rec_id = mea.recording_names(self.response).index(
-                self.rec_name
-            )
-            assert self._rec_id
-        return self._rec_id
-
-    @property
-    def sensor_sample_rate(self) -> float:
-        if not self._sensor_sample_rate:
-            self._sensor_sample_rate = self.recorded_stimulus.xs(
-                self.rec_name, "Recording"
-            ).iloc[0]["Sampling_Freq"]
-            assert self._sensor_sample_rate
-        self._sensor_sample_rate
-        return self._sensor_sample_rate
-
-    @property
-    def num_sensor_samples(self) -> int:
-        row = self.recorded_stimulus.xs(self.rec_name, level="Recording").iloc[
-            0
-        ]
-        num_samples = row["End_Fr"] - row["Begin_Fr"] + 1
-        return num_samples
-
-    def spikes(self, cluster_id) -> np.ndarray:
-        spikes = (
-            self.response.xs(self.rec_name, level="Recording")
-            .reset_index("Stimulus ID")
-            .loc[cluster_id]["Spikes"]
-            .compressed()
-        )
-        return spikes
 
 
 def test_load_stimulus_pattern():
@@ -135,36 +58,39 @@ def response_data():
 
 
 @pytest.fixture
-def exp0(stimulus_pattern, recorded_stimulus, response_data):
-    exp = ExperimentData(
+def comp_exp0(stimulus_pattern, recorded_stimulus, response_data):
+    exp = mea.single_3brain_recording(
         "Chicken_04_08_21_Phase_01",
         stimulus_pattern,
-        response_data,
         recorded_stimulus,
+        response_data,
     )
     return exp
 
 
 @pytest.fixture
-def exp12(stimulus_pattern, recorded_stimulus, response_data):
-    exp = ExperimentData(
+def comp_exp12(stimulus_pattern, recorded_stimulus, response_data):
+    exp = mea.single_3brain_recording(
         "Chicken_17_08_21_Phase_00",
         stimulus_pattern,
-        response_data,
         recorded_stimulus,
+        response_data,
     )
     return exp
 
 
 @pytest.fixture
-def decimated_stimulus_freq():
-    stim, freq = mea.decompress_stimulus(
-        mea.load_stimulus_pattern(FF_NOISE_PATTERN_PATH),
-        mea.load_recorded_stimulus(FF_RECORDED_NOISE_PATH),
-        "Chicken_17_08_21_Phase_00",
-        18,
-    )
-    return stim, freq
+def exp0(comp_exp0):
+    downsample = 18
+    exp = mea.decompress_recording(comp_exp0, downsample)
+    return exp
+
+
+@pytest.fixture
+def exp12(comp_exp12):
+    downsample = 18
+    exp = mea.decompress_recording(comp_exp12, downsample)
+    return exp
 
 
 def test_recording_names(response_data):
@@ -194,43 +120,139 @@ def test_recording_names(response_data):
 def test_cluster_ids(response_data):
     # fmt: off
     known_list = [12, 13, 14, 15, 17, 25, 28, 29, 34, 44, 45, 50, 60, 61, 80,
-                  82, 99, 114, 119, 149, 217, 224, 287, 317, 421, 553, 591,]
+                  82, 99, 114, 119, 149, 217, 224, 287, 317, 421, 553, 591]
     # fmt: on
     recording_name = "Chicken_21_08_21_Phase_00"
-    cluster_ids = mea.cluster_ids(response_data, recording_name)
+    cluster_ids = mea._cluster_ids(response_data, recording_name)
     assert cluster_ids == known_list
 
 
-def test_decompress_stimulus(stimulus_pattern, recorded_stimulus):
-    # Test 1
-    # No downsampling.
-    decomp, new_freq = mea.decompress_stimulus(
-        stimulus_pattern,
-        recorded_stimulus,
-        "Chicken_17_08_21_Phase_00",
-        downsample_factor=1,
+def test_load_3brain_recordings():
+    # Test
+    res = mea.load_3brain_recordings(
+        FF_NOISE_PATTERN_PATH,
+        FF_RECORDED_NOISE_PATH,
+        FF_SPIKE_RESPONSE_PATH,
+        include=[
+            "Chicken_04_08_21_Phase_01",
+            "Chicken_04_08_21_Phase_02",
+        ],
     )
-    known_length = 16071532
-    assert decomp.shape == (known_length, mea.NUM_STIMULUS_LEDS)
-    assert new_freq == pytest.approx(mea.ELECTRODE_FREQ)
+    assert len(res) == 2
+
+
+def test_decompress_recording(caplog, comp_exp12):
+    """
+    Test decompressing a recording.
+
+    Tests:
+        1. Simple decompression, no errors expected.
+        2. Too much downsample should cause an error.
+        3. Allowing collisions should prevent an exception.
+    """
+    # Test 1
+    downsample = 18
+    orig_freq = comp_exp12.sensor_sample_rate
+    expected_sample_rate = orig_freq / downsample
+    res = mea.decompress_recording(comp_exp12, downsample)
+    assert res.sample_rate == pytest.approx(expected_sample_rate)
 
     # Test 2
-    # Downsample at x18.
-    downsample_factor = 18
-    orig_len = 16071532
-    expected_decimated_len = math.ceil(orig_len / downsample_factor)
-    orig_freq = mea.ELECTRODE_FREQ
-    expected_downsampled_freq = orig_freq / downsample_factor
-    decomp, new_freq = mea.decompress_stimulus(
+    downsample = 100
+    with pytest.raises(ValueError):
+        mea.decompress_recording(comp_exp12, downsample)
+
+    # Test 3
+    downsample = 100
+    expected_sample_rate = orig_freq / downsample
+    with caplog.at_level(logging.WARNING):
+        res = mea.decompress_recording(
+            comp_exp12, downsample, allow_collisions=True
+        )
+        assert "Multiple spikes occured in the same bucket" in caplog.text
+    assert res.sample_rate == pytest.approx(expected_sample_rate)
+
+
+def test_single_3brain_recording(
+    stimulus_pattern, recorded_stimulus, response_data
+):
+    # Setup
+    expected_num_samples = 16071532
+
+    # Test
+    rec = mea.single_3brain_recording(
+        "Chicken_17_08_21_Phase_00",
         stimulus_pattern,
         recorded_stimulus,
-        "Chicken_17_08_21_Phase_00",
-        downsample_factor,
+        response_data,
     )
-    assert decomp.shape == (expected_decimated_len, mea.NUM_STIMULUS_LEDS)
+    assert rec.num_sensor_samples == expected_num_samples
+    assert rec.stimulus_pattern.shape[1] == mea.NUM_STIMULUS_LEDS
     # Note: the sampling frequency in the Pandas dataframe isn't as accurate
     # as the ELECTRODE_FREQ value.
-    assert new_freq == pytest.approx(expected_downsampled_freq)
+    assert rec.sensor_sample_rate == pytest.approx(mea.ELECTRODE_FREQ)
+
+
+def test_decompress_stimulus():
+    """
+    Tests:
+        1. Decompression with no downsample.
+        2. Decompression with downsample.
+            - This test overlaps a bit with test_downsample_stimulus
+        3. Invalid trigger start should cause an exception.
+    """
+    # Setup
+    # fmt: off
+    stimulus_pattern = np.array([
+        [1, 1, 1, 1, 0, 0, 0, 0],
+        [1, 1, 0, 0, 1, 1, 0, 0],
+        [1, 0, 1, 0, 1, 0, 1, 0]]).T
+    trigger_events = np.array([0, 4, 5, 7, 12])
+    num_sensor_samples = 20
+    expected_output = np.array([
+    # idx: 0  1  2  3  4  5  6  7  8  9  10 11 12 13 14 15 16 17 18 19
+    # val: 0  0  0  0  1  2  2  3  3  3  3  3  4  4  4  4  4  4  4  4
+          [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+          [1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
+          [1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1]]).T
+    expected_downsampled = np.array([
+    # idx: 0     2     4     6     8     10    12    14    16    18
+    # val: 0     0     1     2     3     3     4     4     4     4 
+          [0.7, 1.1,   1,    1,    1,    1,  0.3,    0,    0,    0],
+          [0.7, 1.1, 0.7,    0,    0,    0,  0.7,    1.1,  1,    1],
+          [0.7,   1, 0.5,  0.7,    0,    0,  0.7,    1.1,  1,    1]]).T
+    # fmt: on
+    # Notice how the first downsampled value is pulled towards zero. This
+    # is due to the "constant" option sent to scipy.resample_poly, which is
+    # called by scipy.resample with "0" as the constant value. There are other
+    # options, such as "mean" too. If we want a different constant value
+    # or want "mean" padding, we should call scipy.resapmle_poly directly.
+
+    # Test 1
+    downsample = 1
+    res = mea.decompress_stimulus(
+        stimulus_pattern, trigger_events, num_sensor_samples, downsample
+    )
+    np.testing.assert_array_equal(res, expected_output)
+
+    # Test 2
+    downsample = 2
+    res = mea.decompress_stimulus(
+        stimulus_pattern, trigger_events, num_sensor_samples, downsample
+    )
+    # Test approx with numpy
+    numpy.testing.assert_allclose(res, expected_downsampled, atol=0.1)
+
+    # Test 3
+    # Non-zero starting trigger is invalid.
+    trigger_events_invalid = np.array([2, 4, 5, 7, 12])
+    with pytest.raises(ValueError):
+        mea.decompress_stimulus(
+            stimulus_pattern,
+            trigger_events_invalid,
+            num_sensor_samples,
+            downsample,
+        )
 
 
 def test_downsample_stimulus():
@@ -241,7 +263,7 @@ def test_downsample_stimulus():
                             0, 0, 0, 0, 0, 0, 0, 0,
                             1, 1, 1, 1, 1, 1, 1, 1,
                             0, 0, 0, 0, 0, 0, 0, 0,
-                            1, 1, 1, 1, 1, 1, 1, 1,])
+                            1, 1, 1, 1, 1, 1, 1, 1])
     # TODO: is this satisfactory?
     expected_decimate_by_2 = np.array(
             [0.012, -0.019,  0.029, -0.060,
@@ -249,11 +271,11 @@ def test_downsample_stimulus():
              0.249, -0.076,  0.058, -0.077,
              0.750,  1.077,  0.942,  1.077,
              0.250, -0.077,  0.058, -0.076,
-             0.749,  1.081,  0.937,  1.085,])
+             0.749,  1.081,  0.937,  1.085])
     expected_decimate_by_4 = np.array(
             [0.030, -0.065,  0.595,  1.148,
              0.364, -0.120,  0.620,  1.136,
-             0.369, -0.120,  0.614,  1.148,])
+             0.369, -0.120,  0.614,  1.148])
     # fmt: on
 
     # Test
@@ -265,37 +287,6 @@ def test_downsample_stimulus():
     numpy.testing.assert_allclose(
         decimated_by_4, expected_decimate_by_4, atol=0.002
     )
-
-
-def test_decompress_stimulus():
-    # Setup
-    # fmt: off
-    stimulus_pattern = np.array([
-        [1, 1, 1, 1, 0, 0, 0, 0],
-        [1, 1, 0, 0, 1, 1, 0, 0],
-        [1, 0, 1, 0, 1, 0, 1, 0],]).T
-    trigger_events = np.array([0, 4, 5, 7, 12])
-    # Out array should be overridden, so check this by filling with some value.
-    out_arr = np.full(shape=(20, stimulus_pattern.shape[1]), fill_value=7)
-    expected_output = np.array([
-        # idx: 0  1  2  3  4  5  6  7  8  9  10 11 12 13 14 15 16 17 18 19
-        # val: 0  0  0  0  1  2  2  3  3  3  3  3  4  4  4  4  4  4  4  4
-              [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-              [1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
-              [1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],]).T
-    # fmt: on
-
-    # Test 1
-    mea._decompress_stimulus(stimulus_pattern, trigger_events, out_arr)
-    np.testing.assert_array_equal(out_arr, expected_output)
-
-    # Test 2
-    # Non-zero starting trigger is invalid.
-    trigger_events_invalid = np.array([2, 4, 5, 7, 12])
-    with pytest.raises(ValueError):
-        mea._decompress_stimulus(
-            stimulus_pattern, trigger_events_invalid, out_arr
-        )
 
 
 def test_decompress_spikes1():
@@ -331,7 +322,7 @@ def test_decompress_spikes1():
     assert np.all(spikes[expected_zeros_mask] == False)
 
 
-def test_decompress_spikes2(exp12):
+def test_decompress_spikes2(response_data):
     """
     Test decompress_spikes on actual recordings.
 
@@ -339,14 +330,18 @@ def test_decompress_spikes2(exp12):
     """
     # Setup
     cluster_id = 36
-    spikes = exp12.spikes(cluster_id)
+    spikes_row = response_data.xs(
+        (cluster_id, "Chicken_17_08_21_Phase_00"),
+        level=("Cell index", "Recording"),
+    ).iloc[0]
+    spikes = spikes_row["Spikes"].compressed()
+
     assert spikes.shape == (2361,)
+    num_sensor_samples = spikes[-1] + 1000
 
     # Test
-    spikes_decomp1 = mea.decompress_spikes(spikes, exp12.num_sensor_samples)
-    spikes_decomp18 = mea.decompress_spikes(
-        spikes, exp12.num_sensor_samples, downsample_factor=18
-    )
+    mea.decompress_spikes(spikes, num_sensor_samples)
+    mea.decompress_spikes(spikes, num_sensor_samples, downsample_factor=18)
 
 
 def test_spike_snippets():
@@ -362,6 +357,7 @@ def test_spike_snippets():
     # -----
     stim_frame_of_spike = [4, 1, 0, 6, 7]
     # The numbers in comments refer to the 5 tests below.
+    # fmt: off
     stimulus = np.array(
         [
             [1, 1, 1, 1],  #     |  2
@@ -371,9 +367,10 @@ def test_spike_snippets():
             [0, 0, 0, 1],  #  0       -
             [0, 0, 0, 0],  #  |       |  -
             [1, 0, 0, 0],  #  -       3  |
-            [1, 1, 0, 0],
-        ]  #          |  4
+            [1, 1, 0, 0],  #          |  4
+        ]              
     )
+    # fmt: on
     total_len = 5
     pad = 2
     stimulus_sample_rate = 40
@@ -523,12 +520,10 @@ def test_save_recording_names(tmp_path, response_data):
 
 
 def test_save_cluster_ids(tmp_path, response_data):
-    rec_id = 3
-    cluster_ids = mea.cluster_ids(
-        response_data, mea.recording_names(response_data)[rec_id]
-    )
-    path = mea._save_cluster_ids(cluster_ids, rec_id, tmp_path)
-    expected_path = tmp_path / str(rec_id) / mea.CLUSTER_IDS_FILENAME
+    rec_name = "Chicken_13_08_21_Phase_00"
+    cluster_ids = mea._cluster_ids(response_data, rec_name)
+    path = mea._save_cluster_ids(cluster_ids, tmp_path)
+    expected_path = tmp_path / mea.CLUSTER_IDS_FILENAME
     assert path == expected_path
     assert expected_path.is_file()
     with open(expected_path, "rb") as f:
@@ -544,10 +539,9 @@ def test_labeled_spike_snippets():
     # Setup
     snippet_len = 7
     snippet_pad = 2
-    stim_sample_freq = 40
-    # Fake stimulus. Note that we are did our own nieve upsampling here.
-    # This is done to make the comparison easier.
-    stimulus = np.array(
+    sensor_sample_rate = 1
+    # Fake stimulus pattern.
+    stimulus_pattern = np.array(
         [
             [0, 0, 0, 1],  # 0
             [0, 0, 1, 0],  # 1
@@ -563,36 +557,41 @@ def test_labeled_spike_snippets():
             [1, 1, 0, 0],  # 11
         ]
     )
+    # fmt: off
+
+    # And fake stimulus events, each exactly on the sensor event.
+    stimulus_events = np.arange(0, len(stimulus_pattern))
+    num_sensor_samples = len(stimulus_events) 
     # Fake response
     rec_name1 = "Chicken_04_08_21_Phase_01"
     rec_name2 = "Chicken_04_08_21_Phase_02"
-    index = pd.MultiIndex.from_tuples(
-        (
-            (25, 1, "Chicken_04_08_21_Phase_01"),
-            (40, 1, "Chicken_04_08_21_Phase_01"),
-            (17, 1, "Chicken_04_08_21_Phase_02"),
-            (40, 1, "Chicken_04_08_21_Phase_02"),
-        ),
-        names=["Cell index", "Stimulus ID", "Recording"],
-    )
-    # Spike data has format: [(Kernel, Spikes),...]
-    # We only care about the spikes, so we can leave the kernels as None.
-    # fmt: off
-    spike_data = [
-        (None, [820, 3648]),
-        (None, [3044, 4067]),
-        (None, [5239,],),
-        (None, [4430,],)]
-    # fmt: on
-    # Convert the data to use masked arrays.
-    spike_data_m = [
-        (kernel, ma.array(spikes, mask=np.zeros(len(spikes))))
-        for kernel, spikes in spike_data
-    ]
+    cluster_ids1 = [25, 40]
+    cluster_ids2 = [17, 40]
+    spike_events1 = [
+        np.array([1, 8]),
+        np.array([6, 9])]
+    spike_events2 = [
+        np.array([11], dtype=int),
+        np.array([9], dtype=int)]
 
-    response = pd.DataFrame(
-        spike_data_m, index=index, columns=["Kernel", "Spikes"]
-    )
+    # Finally, make a CompressedSpikeRecording.
+    recording1 = mea.CompressedSpikeRecording(
+            rec_name1,
+            stimulus_pattern,
+            stimulus_events,
+            spike_events1,
+            cluster_ids1,
+            sensor_sample_rate,
+            num_sensor_samples)
+    recording2 = mea.CompressedSpikeRecording(
+            rec_name2,
+            stimulus_pattern,
+            stimulus_events,
+            spike_events2,
+            cluster_ids2,
+            sensor_sample_rate,
+            num_sensor_samples)
+
     # The following is the predicted snippets.
     expected_spike_snippets1 = np.array(
         [
@@ -656,33 +655,16 @@ def test_labeled_spike_snippets():
             ],
         ]
     )
+    # fmt: on
     expected_cluster_ids1 = np.array([25, 25, 40, 40])
     expected_cluster_ids2 = np.array([17, 40])
 
-    # The spike times were calculated according to the following function.
-    # Then, the slices of the stimulus were manually copied, and zoomed by 2,
-    # as the stimulus was sampled at 40 Hz (twice the stimulus frequency).
-    # Leaving the function here in case the test arrays need to be regenerated.
-    def create_ans():
-        def spike_to_frame(sp):
-            return sp * (stim_sample_freq / mea.ELECTRODE_FREQ)
-
-        res = []
-        for d in spike_data:
-            d_spikes = d[1]
-            for sp in d_spikes:
-                res.append(spike_to_frame(sp))
-        print(res)
-
     # Test 1 (rec_name1)
-    spike_snippets, cluster_ids = mea.labeled_spike_snippets(
-        stimulus,
-        response,
-        rec_name1,
-        stim_sample_freq,
-        mea.ELECTRODE_FREQ,
+    spike_snippets, cluster_ids, _ = mea.labeled_spike_snippets(
+        recording1,
         snippet_len,
         snippet_pad,
+        downsample=1,
     )
     for idx, (spwin, cluster_ids) in enumerate(
         zip(spike_snippets, cluster_ids)
@@ -691,14 +673,8 @@ def test_labeled_spike_snippets():
         np.testing.assert_equal(cluster_ids, expected_cluster_ids1[idx])
 
     # Test 2 (rec_name2)
-    spike_snippets, cluster_ids = mea.labeled_spike_snippets(
-        stimulus,
-        response,
-        rec_name2,
-        stim_sample_freq,
-        mea.ELECTRODE_FREQ,
-        snippet_len,
-        snippet_pad,
+    spike_snippets, cluster_ids, _ = mea.labeled_spike_snippets(
+        recording2, snippet_len, snippet_pad, downsample=1
     )
     for idx, (spwin, cluster_ids) in enumerate(
         zip(spike_snippets, cluster_ids)
@@ -707,25 +683,25 @@ def test_labeled_spike_snippets():
         np.testing.assert_equal(cluster_ids, expected_cluster_ids2[idx])
 
 
-def test_write_rec_snippets(tmp_path, exp12):
+def test_write_rec_snippets(tmp_path, comp_exp12):
     # Setup
     snippet_len = 7
     snippet_pad = 1
     empty_snippets = 0
     snippets_per_file = 100
+    downsample = 18
+    id_for_folder_name = 5
 
     # Test
     # TODO: add some more checks.
     # Currently, the test only checks that the method runs to completion.
     mea._write_rec_snippets(
-        exp12.stimulus,
-        exp12.response,
-        exp12.rec_name,
-        exp12.rec_id,
+        comp_exp12,
         tmp_path,
+        id_for_folder_name,
+        downsample,
         snippet_len,
         snippet_pad,
-        exp12.stimulus_sample_rate,
         empty_snippets,
         snippets_per_file,
     )

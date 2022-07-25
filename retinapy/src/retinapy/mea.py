@@ -33,6 +33,52 @@ stimuli = [
 stimulus_names = tuple(s.name for s in stimuli)
 
 
+class CompressedSpikeRecording:
+    def __init__(
+        self,
+        name: str,
+        stimulus_pattern: np.ndarray,
+        stimulus_events: np.ndarray,
+        spike_events: List[np.ndarray],
+        cluster_ids: List[int],
+        sensor_sample_rate: float,
+        num_sensor_samples: int,
+    ):
+        if len(spike_events) != len(cluster_ids):
+            raise ValueError(
+                f"Mismatch between number of cluster-spikes "
+                f"({len(spike_events)}) and number of cluster ids "
+                f"({len(cluster_ids)})."
+            )
+        self.name = name
+        self.stimulus_pattern = stimulus_pattern
+        self.cluster_ids = cluster_ids
+        self.stimulus_events = stimulus_events
+        self.spike_events = spike_events
+        self.sensor_sample_rate = sensor_sample_rate
+        self.num_sensor_samples = num_sensor_samples
+
+
+class SpikeRecording:
+    def __init__(self, name, stimulus, spikes, cluster_ids, sample_rate):
+        if len(stimulus) != len(spikes):
+            raise ValueError(
+                f"Length of stimulus ({len(stimulus)}) and length"
+                f" of response ({len(spikes)}) do not match."
+            )
+        if spikes.shape[1] != len(cluster_ids):
+            raise ValueError(
+                f"Mismatch between number of cluster-spikes "
+                f"({spikes.shape[1]}) and number of cluster ids "
+                f"({len(cluster_ids)})."
+            )
+        self.name = name
+        self.stimulus = stimulus
+        self.spikes = spikes
+        self.cluster_ids = cluster_ids
+        self.sample_rate = sample_rate
+
+
 def load_stimulus_pattern(file_path: str) -> np.ndarray:
     """
     Loads the stimulus data from the HDF5 file as a Pandas DataFrame.
@@ -99,58 +145,145 @@ def load_response(file_path: str, keep_kernels=False) -> pd.DataFrame:
 
 
 def load_recorded_stimulus(file_path: str) -> pd.DataFrame:
+    """Load the spike data from a Pickle file as a Pandas DataFrame."""
     res = pd.read_pickle(file_path, compression="infer")
+    return res
+
+
+def stim_and_spike_rows(
+    rec_name: str, stimulus_df: pd.DataFrame, response_df: pd.DataFrame
+) -> Tuple[pd.Series, pd.Series]:
+    """
+    Return the stimulus row and spike rows corresponding to a single recording.
+    """
+    SUPPORTED_STIMULUS = 1
+    stim_row = stimulus_df.xs(
+        (SUPPORTED_STIMULUS, rec_name), level=("Stimulus_index", "Recording")
+    )  # .reset_index("Stimulus_index", drop=True)
+    if len(stim_row) != 1:
+        raise ValueError(
+            "There should be only one stimulus recording. "
+            f"Got ({len(stim_row)}). For recording name: ({rec_name})"
+        )
+    stim_row = stim_row.iloc[0]
+    response_rows = response_df.xs(
+        (SUPPORTED_STIMULUS, rec_name), level=("Stimulus ID", "Recording")
+    )  # .reset_index("Stimulus ID", drop=True)
+    return stim_row, response_rows
+
+
+def load_3brain_recordings(
+    stimulus_pattern_path: str,
+    stimulus_recording_path: str,
+    response_recording_path: str,
+    include: List[str] = None,
+) -> List[CompressedSpikeRecording]:
+    """
+    Creates a CompressedSpikeRecording for each recording in the 3Brain data.
+    """
+    stimulus_pattern = load_stimulus_pattern(stimulus_pattern_path)
+    stimulus_recordings = load_recorded_stimulus(stimulus_recording_path)
+    response_recordings = load_response(response_recording_path)
+    rec_names = recording_names(response_recordings)
+    res = []
+    for rec_name in rec_names:
+        do_load = include is None or rec_name in include
+        if not do_load:
+            continue
+        rec_obj = single_3brain_recording(
+            rec_name, stimulus_pattern, stimulus_recordings, response_recordings
+        )
+        res.append(rec_obj)
+    return res
+
+
+def single_3brain_recording(
+    rec_name: str,
+    stimulus_pattern: np.ndarray,
+    stimulus_recordings: pd.DataFrame,
+    response_recordings: pd.DataFrame,
+) -> CompressedSpikeRecording:
+    stimulus_row, response_rows = stim_and_spike_rows(
+        rec_name, stimulus_recordings, response_recordings
+    )
+    # Handle stimulus.
+    if stimulus_row["Stimulus_name"] != "FF_Noise":
+        raise ValueError(
+            f'Only stimulus type "FF_NOISE" is currently '
+            f'supported. Got ({stimulus_row["Stimulus_name"]})'
+        )
+    # TODO: is 'End_Fr' inclusive? If so, add 1 below. Assuming yes for now.
+    stimulus_events = stimulus_row["Trigger_Fr_relative"].astype(int)
+    num_samples = stimulus_events[-1] + 1
+    # Remove the last event, as it's the end.
+    stimulus_events = stimulus_events[:-1]
+    sensor_sample_rate = stimulus_row["Sampling_Freq"]
+
+    # Handle spikes.
+    spikes_per_cluster = []
+    cluster_ids = []
+    for cluster_id, cluster_row in response_rows.iterrows():
+        spikes = cluster_row["Spikes"].compressed().astype(int)
+        assert not np.ma.isMaskedArray(spikes), "Don't forget to decompress!"
+        spikes_per_cluster.append(spikes),
+        cluster_ids.append(cluster_id)
+
+    # Create return object.
+    res = CompressedSpikeRecording(
+        rec_name,
+        stimulus_pattern,
+        stimulus_events,
+        spikes_per_cluster,
+        cluster_ids,
+        sensor_sample_rate,
+        num_samples,
+    )
+    return res
+
+
+def decompress_recording(
+    recording: CompressedSpikeRecording,
+    downsample: int,
+    allow_collisions: bool = False,
+) -> SpikeRecording:
+    """
+    Decompress a compressed recording.
+
+    The result holds numpy arrays where the first dimension is time.
+
+    Without downsampling, a single recording take up more than 1 gigabyte of
+    memory. It's quite convenient to set the  downsample to 18, as this will
+    cause the resulting sample rate to be 991.8 Hz, which is the closest you
+    can get to 1 kHz, given the 3Brain electrode's original frequency.
+    """
+    sample_rate = recording.sensor_sample_rate / downsample
+    stimulus = decompress_stimulus(
+        recording.stimulus_pattern,
+        recording.stimulus_events,
+        recording.num_sensor_samples,
+        downsample,
+    )
+    spikes = np.stack(
+        [
+            decompress_spikes(
+                s, recording.num_sensor_samples, downsample, allow_collisions
+            )
+            for s in recording.spike_events
+        ],
+        axis=1,
+    )
+    res = SpikeRecording(
+        recording.name, stimulus, spikes, recording.cluster_ids, sample_rate
+    )
     return res
 
 
 def decompress_stimulus(
     stimulus_pattern: np.ndarray,
-    stimulus_df: pd.DataFrame,
-    rec_name: str,
-    downsample_factor: int = 1,
-) -> Tuple[np.ndarray, float]:
-    row = stimulus_df.xs(rec_name, level="Recording")
-    if len(row) != 1:
-        raise ValueError(
-            "Expected exactly one row for recording ({rec_name})."
-            f" Got ({len(row)})."
-        )
-    row = row.iloc[0]
-    # TODO: is 'End_Fr' inclusive? If so, add 1 below. Assuming yes for now.
-    num_samples = row["End_Fr"] - row["Begin_Fr"] + 1
-    if num_samples != int(num_samples):
-        raise ValueError(
-            "Expected integer number of samples. Got " f"({num_samples})."
-        )
-    trigger_events = row["Trigger_Fr_relative"]
-    # Two very similar code paths:
-    res = np.empty((num_samples, stimulus_pattern.shape[1]))
-    _decompress_stimulus(stimulus_pattern, trigger_events, res)
-    res = downsample_stimulus(res, downsample_factor)
-
-    # Optional, if bottleneck encountered
-    # ===================================
-    # We are doing a lot of slicing in the time-step dimension, so keep it
-    # as the row dimension. Also insure the array is contiguous for further
-    # speed-ups.
-    # res = np.ascontiguousarray(res)
-
-    # Note: the sampling frequency in the Pandas dataframe isn't as accurate
-    # as the ELECTRODE_FREQ value.
-    new_freq = row["Sampling_Freq"] / downsample_factor
-    return res, new_freq
-
-
-def _decompress_stimulus(
-    stimulus_pattern: np.ndarray,
     trigger_events: np.ndarray,
-    out_array: np.ndarray,
-):
-    """TODO: take in the stimulus trigger points."""
-    logging.info(
-        "Starting: decompressing stimulus. Resulting shape "
-        f"({out_array.shape})."
-    )
+    total_length: int,
+    downsample: int,
+) -> np.ndarray:
     if trigger_events[0] != 0:
         raise ValueError(
             "The trigger events are expected to start at zero, "
@@ -161,26 +294,36 @@ def _decompress_stimulus(
             "Recorded stimulus is longer than the stimulus "
             f"pattern. ({len(trigger_events)} > {len(stimulus_pattern)})"
         )
+    # TODO: check assumption! Assuming that the stimulus does not continue
+    # after the last trigger event. This makes the last trigger special in that
+    # it doesn't mark the start of a new stimulus output.
+    logging.info(
+        "Starting: decompressing stimulus. Resulting shape ({total_length})."
+    )
     # If this becomes a bottleneck, there are some tricks to reach for:
     # https://stackoverflow.com/questions/60049171/fill-values-in-numpy-array-that-are-between-a-certain-value
+    num_channels = stimulus_pattern.shape[1]
+    res = np.empty(shape=(total_length, num_channels))
     slices = np.stack((trigger_events[:-1], trigger_events[1:]), axis=1)
     for idx, s in enumerate(slices):
-        out_array[np.arange(*s)] = stimulus_pattern[idx]
+        res[np.arange(*s)] = stimulus_pattern[idx]
     last_trigger = trigger_events[-1]
-    out_array[last_trigger:] = stimulus_pattern[len(slices)]
+    res[last_trigger:] = stimulus_pattern[len(slices)]
     logging.info(
         f"Finished: decompressing stimulus. "
         f"The last trigger was at ({trigger_events[-1]}) making its "
-        f"duration ({out_array.shape[0]} - {trigger_events[-1]} = "
-        f"{out_array.shape[0] - trigger_events[-1]}) samples."
+        f"duration ({res.shape[0]} - {trigger_events[-1]} = "
+        f"{res.shape[0] - trigger_events[-1]}) samples."
     )
-    return out_array
+    res = downsample_stimulus(res, downsample)
+    return res
 
 
 def decompress_spikes(
     spikes: Union[np.ndarray, np.ma.MaskedArray],
     num_sensor_samples: int,
     downsample_factor: int = 1,
+    allow_collisions: bool = False,
 ) -> np.ndarray:
     """
     Fills an True/False array depending on whether a spike occurred.
@@ -190,11 +333,16 @@ def decompress_spikes(
     if np.ma.isMaskedArray(spikes):
         spikes = spikes.compressed()
     downsampled_spikes = np.floor_divide(spikes, downsample_factor)
-    if np.min(np.diff(downsampled_spikes)) < 1:
-        raise ValueError(
-            "Multiple spikes occured in the same bucket; spikes "
-            "are happening faster than the sampling rate."
-        )
+    is_collision = (
+        len(downsampled_spikes) > 1 and np.min(np.diff(downsampled_spikes)) < 1
+    )
+    if is_collision:
+        msg = "Multiple spikes occured in the same bucket; spikes are \
+               happening faster than the sampling rate."
+        if allow_collisions:
+            logging.warning(msg)
+        else:
+            raise ValueError(msg)
     res = np.zeros(
         shape=[
             math.ceil(num_sensor_samples / downsample_factor),
@@ -280,10 +428,13 @@ def _list_to_index_map(l) -> Dict[str, int]:
     return {x: i for i, x in enumerate(l)}
 
 
-def cluster_ids(response: pd.DataFrame, rec_name: str) -> list:
+def _cluster_ids(response: pd.DataFrame, rec_name: str) -> list:
     """Returns the list of cluster ids for a given recording.
 
     Stimulus ID = 7 is currently ignored (actually, anything other than 1).
+
+    This function isn't used anymore, I don't think. Keeping it around for
+    reference, for a little while.
     """
     # Note: I'm not sure if it's better to request by recording name or
     # the recording id.
@@ -312,7 +463,7 @@ def spike_window(
     Calculate the window endpoints around a spike, in samples of the stimulus.
     """
     if sensor_sample_rate < stimulus_sample_rate:
-        logging.warn(
+        logging.warning(
             f"The sensor sample rate ({sensor_sample_rate}) is lower "
             f"than the stimulus sample rate ({stimulus_sample_rate})."
         )
@@ -345,7 +496,7 @@ def spike_snippets(
     Return a subset of the stimulus around the spike points.
 
     Args:
-        stimulus: The stimulus.
+        stimulus: The decompressed stimulus.
         spikes: The sensor samples in which the spikes were detected.
         total_len: The length of the snippet in stimulus frames.
         post_spike_len: The number of frames to pad after the spike.
@@ -404,6 +555,10 @@ def spike_snippets(
         stimulus frame: |   0   |   1   |   2   |
         spike time:     |-------********--------|
     """
+    if np.ma.isMaskedArray(spikes):
+        raise ValueError(
+            "spikes must be a standard numpy array, not a masked array."
+        )
     # 1. Get the spike windows.
     win_start, _ = spike_window(
         spikes,
@@ -432,55 +587,44 @@ def spike_snippets(
 
 
 def labeled_spike_snippets(
-    stimulus: np.ndarray,
-    response: pd.DataFrame,
-    rec_name: str,
-    stimulus_sample_rate,
-    sensor_sample_rate,
-    snippet_len: int = 1000,
-    snippet_pad: int = 200,
-) -> Tuple[np.ndarray, np.ndarray]:
+    rec: CompressedSpikeRecording,
+    snippet_len: int,
+    snippet_pad: int,
+    downsample: int,
+) -> Tuple[np.ndarray, np.ndarray, float]:
     """
     Caluclate spike snippets for a recording, paired with the cluster ids.
 
     Args:
-        stimulus: the stimulus, sampled at `stimulus_sample_rate`.
-        response: the response dataframe.
-        rec_name: the name of the recording to extract snippets for.
         snippet_len: the length of the snippet.
         snippet_pad: the number of timesteps to include after the spike.
-        stimulus_sample_rate: the sampling frequency of the stimulus.
-        sensor_sample_rate: the sampling frequency of the sensor.
+        downsample: the factor by which the stimulus is downsampled.
 
-    Returns: two np.ndarrays as a tuple. The first element contains
-    the spike snippets, and the second element contains ids of the clusters.
+    Returns: two np.ndarrays and a float as a tuple. The first element contains
+    the spike snippets, the second element contains ids of the clusters, and
+    the last element is the sampling frequency of the snippets, calculated
+    from the downsample.
     """
-    response = (
-        response.xs(rec_name, level="Recording")
-        .reset_index(level="Cell index")
-        .drop("Kernel", axis=1, errors="ignore")
+    stimulus = decompress_stimulus(
+        rec.stimulus_pattern,
+        rec.stimulus_events,
+        rec.num_sensor_samples,
+        downsample,
     )
-
-    def create_snippets(spikes) -> List[np.ndarray]:
-        """Create the snippets for a list of spikes."""
-        snips = []
-        w = spike_snippets(
-            stimulus,
-            spikes.compressed(),
-            stimulus_sample_rate,
-            sensor_sample_rate,
-            snippet_len,
-            snippet_pad,
-        )
-        snips.extend(w)
-        return snips
+    sample_rate = rec.sensor_sample_rate / downsample
 
     # Gather the snippets and align them with a matching array of cluster ids.
     snippets = []
     cluster_ids = []
-    for row_as_tuple in response.itertuples(index=False):
-        cluster_id, spikes = row_as_tuple
-        snips = create_snippets(spikes)
+    for idx, cluster_id in enumerate(rec.cluster_ids):
+        snips = spike_snippets(
+            stimulus,
+            rec.spike_events[idx],
+            sample_rate,
+            rec.sensor_sample_rate,
+            snippet_len,
+            snippet_pad,
+        )
         cluster_ids.extend(
             [
                 cluster_id,
@@ -490,7 +634,7 @@ def labeled_spike_snippets(
         snippets.extend(snips)
     snippets = np.stack(snippets)
     cluster_ids = np.array(cluster_ids)
-    return snippets, cluster_ids
+    return snippets, cluster_ids, sample_rate
 
 
 def generate_fake_spikes(
@@ -576,16 +720,15 @@ def _save_recording_names(rec_list, save_dir) -> pathlib.Path:
     return save_path
 
 
-def _save_cluster_ids(cell_cluster_ids, rec_id, data_root_dir) -> pathlib.Path:
+def _save_cluster_ids(cell_cluster_ids, parent_dir) -> pathlib.Path:
     """
     Saves a list of cluster ids.
 
     The list functions as an id to name map.
     """
-    parent_dir = pathlib.Path(data_root_dir) / str(rec_id)
     # Create if not exists
     parent_dir.mkdir(parents=False, exist_ok=True)
-    save_path = pathlib.Path(data_root_dir) / str(rec_id) / "cluster_ids.pickle"
+    save_path = parent_dir / "cluster_ids.pickle"
     # Create out file
     with save_path.open("wb") as f:
         pickle.dump(cell_cluster_ids, f)
@@ -629,14 +772,12 @@ def create_snippet_training_data(
 
 
 def _write_rec_snippets(
-    stimulus: np.ndarray,
-    response: pd.DataFrame,
-    rec_name: str,
-    rec_id: int,
+    rec: CompressedSpikeRecording,
     data_root_dir,
+    rec_id: int,
+    downsample: int,
     snippet_len: int,
     snippet_pad: int,
-    stimulus_freq: float,
     empty_snippets: float,
     snippets_per_file: int,
 ):
@@ -649,17 +790,14 @@ def _write_rec_snippets(
     rec_dir = pathlib.Path(data_root_dir) / str(rec_id)
     rec_dir.mkdir(parents=False, exist_ok=True)
     # Extract the stimulus snippet around the spikes.
-    snippets, cluster_ids = labeled_spike_snippets(
-        stimulus,
-        response,
-        rec_name,
-        stimulus_freq,
-        ELECTRODE_FREQ,
+    snippets, cluster_ids, sample_freq = labeled_spike_snippets(
+        rec,
+        downsample,
         snippet_len,
         snippet_pad,
     )
     # Save the cluster ids.
-    _save_cluster_ids(cluster_ids, rec_id, data_root_dir)
+    _save_cluster_ids(cluster_ids, rec_dir)
     assert len(cluster_ids) == len(snippets)
     # Shuffle the cluster ids and snippets together.
     rng = np.random.default_rng(RNG_SEED)

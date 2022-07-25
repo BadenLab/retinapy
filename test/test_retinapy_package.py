@@ -1,8 +1,8 @@
 import retinapy
-import retinapy.mea_noise 
+import retinapy.mea
 
 """
-Test the importing of the mea_noise package from an external file.
+Test the importing of the mea package from an external file.
 """
 
 print("Sucess")
