@@ -58,6 +58,18 @@ class CompressedSpikeRecording:
         self.sensor_sample_rate = sensor_sample_rate
         self.num_sensor_samples = num_sensor_samples
 
+    def __str__(self):
+        res = f"Recording: {self.name}, " \
+              f"sensor sample rate: {self.sensor_sample_rate} Hz, " \
+              f"num samples: {self.num_sensor_samples}, " \
+              f"duration: {self.duration():.1f} seconds, " \
+              f"stimulus pattern shape: {self.stimulus_pattern.shape}," \
+              f"num clusters: {len(self.cluster_ids)}."
+        return res
+
+    def duration(self):
+        return self.num_sensor_samples / self.sensor_sample_rate
+
 
 class SpikeRecording:
     def __init__(self, name, stimulus, spikes, cluster_ids, sample_rate):
@@ -77,6 +89,19 @@ class SpikeRecording:
         self.spikes = spikes
         self.cluster_ids = cluster_ids
         self.sample_rate = sample_rate
+
+    def __str__(self):
+        res = f"Recording: {self.name}, " \
+              f"sample rate: {self.sample_rate:.1f} Hz " \
+              f"({1000/self.sample_rate:.3f} ms per sample), " \
+              f"duration: {self.duration():.1f} seconds, " \
+              f"stimulus shape: {self.stimulus.shape}, " \
+              f"spikes shape: {self.spikes.shape}, " \
+              f"num clusters: {len(self.cluster_ids)}."
+        return res
+
+    def duration(self):
+        return self.stimulus.shape[0] / self.sample_rate
 
 
 def load_stimulus_pattern(file_path: str) -> np.ndarray:
