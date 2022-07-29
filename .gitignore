@@ -23,6 +23,12 @@ __pycache__/
 # Jupyter Lab notebook checkpoints
 .ipynb_checkpoints/
 
+# Svelte web app
+web/node_modules
+web/public/build
+web/data
+
+
 # Reserved folders for input data, output data and output binaries.
 data
 out
