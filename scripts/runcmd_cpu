@@ -2,10 +2,8 @@
 #docker rm csj
 docker run -it \
 --ipc=host \
---gpus all \
 --name="mea-runcmd-$(date +%s)" \
 -v $(pwd):/app \
 csi \
 $1
-
 

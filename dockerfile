@@ -1,4 +1,4 @@
-FROM nvidia/cuda:11.5.1-base-ubuntu20.04
+FROM nvidia/cuda:11.7.0-base-ubuntu20.04
 #FROM pytorch/pytorch:latest
 
 # I edit the nvimrc too often for it to be a base image.
@@ -82,12 +82,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 	autoconf \
 	automake \
 	locales \
-	# For ripgrep, which is for telescope
 	ripgrep \
-	# For fd-find
-	fd-find \
-	# For airline font support
-	fonts-powerline && \
+	fd-find && \
 	rm -rf /var/lib/apt/lists/*
 
 RUN pip install --upgrade pip && \
@@ -106,6 +102,7 @@ RUN conda install --yes -c conda-forge nodejs'>=12.12.0' --repodata-fn=repodata.
 ###############################################################################
 
 RUN conda config --add channels conda-forge 
+RUN conda config --add channels pytorch
 RUN conda install --yes \
 	python=3.9 \
 	pip \
@@ -114,6 +111,7 @@ RUN conda install --yes \
 	pandas \
 	scipy \
 	pytorch \
+	cudatoolkit=11.6 \
 	jupyterlab  \
 	matplotlib \
 	plotly \
@@ -148,31 +146,6 @@ RUN pip install \
 		cprofilev \
 		mypy 
 
-###############################################################################
-# Neovim
-###############################################################################
-# For some reason, /home/$USER/.config is owned by root. 
-RUN mkdir -p /home/$USER/.config  && chown $USER:$USER /home/$USER/.config
-
-COPY --chown=$USER_ID tools/nvim $NEOVIM_DIR
-
-# Currently, assume that NeoSolarized file is copied.
-# RUN git clone https://github.com/overcache/NeoSolarized.git
-# RUN mkdir -p $NEOVIM_DIR/colors/ && chown $USER_ID $NEOVIM_DIR/colors
-# RUN cp ./NeoSolarized/colors/NeoSolarized.vim $NEOVIM_DIR/colors/
-
-# Switching to our new user. Do this at the end, as we need root permissions 
-# in order to create folders and install things.
-USER $USER
-
-RUN curl -fLo /home/$USER/.local/share/nvim/site/autoload/plug.vim --create-dirs \
-       https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim
-RUN nvim --headless +PlugInstall +qa
-RUN nvim --headless -c "CocInstall -sync coc-pyright coc-html | qa"
-
-###############################################################################
-# /Neovim
-###############################################################################
 
 USER root
 # In order to allow the Python package to be edited without
