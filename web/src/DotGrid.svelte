@@ -1,5 +1,5 @@
 <script>
-	import { renderable } from './game.js';
+	import { renderable } from './engine.js';
 	
 	export let color = 'black';
 	export let divisions = 20;

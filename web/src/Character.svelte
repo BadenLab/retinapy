@@ -1,5 +1,5 @@
 <script>
-	import { renderable, width, height } from './game.js';
+	import { renderable, width, height } from './engine.js';
 	import Text from './Text.svelte';
 	import vec2 from 'gl-vec2';
 	

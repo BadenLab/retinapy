@@ -1,96 +1,99 @@
 <script>
-	import { onMount, onDestroy, setContext } from 'svelte';
+import { onMount, onDestroy, setContext } from 'svelte';
 
-	import {
-		key,
-		width,
-		height,
-		canvas as canvasStore,
-		context as contextStore,
-		pixelRatio,
-		props,
-		time
-	} from './game.js';
+import {
+	key,
+	width,
+	height,
+	canvas as canvasStore,
+	context as contextStore,
+	pixelRatio,
+	props,
+	time,
+	update_clock,
+} from './engine.js';
 
-	export let killLoopOnError = true;
-	export let attributes = {};
-	
-	let listeners = [];
-	let canvas;
-	let context;
-	let frame;
+export let killLoopOnError = true;
+export let attributes = {};
 
-	onMount(() => {
-		// prepare canvas stores
-		context = canvas.getContext('2d', attributes);
-		canvasStore.set(canvas);
-		contextStore.set(context);
+let listeners = [];
+let canvas;
+let context;
+let frame;
 
-		// setup entities
-		listeners.forEach(async entity => {
-			if (entity.setup) {
-				let p = entity.setup($props);
-				if (p && p.then) await p;
-			}
-			entity.ready = true;
-		});
-		
-		// start game loop
-		return createLoop(render)
+onMount(() => {
+	// prepare canvas stores
+	context = canvas.getContext('2d', attributes);
+	canvasStore.set(canvas);
+	contextStore.set(context);
+
+	// setup entities
+	listeners.forEach(async entity => {
+		if (entity.setup) {
+			let p = entity.setup($props);
+			if (p && p.then) await p;
+		}
+		entity.ready = true;
 	});
 	
-	setContext(key, {
-		add (fn) {
-			this.remove(fn);
-			listeners.push(fn);
-		},
-		remove (fn) {
-			const idx = listeners.indexOf(fn);
-			if (idx >= 0) listeners.splice(idx, 1);
+	// start game loop
+	return createLoop(render)
+});
+
+setContext(key, {
+	add (fn) {
+		this.remove(fn);
+		listeners.push(fn);
+	},
+	remove (fn) {
+		const idx = listeners.indexOf(fn);
+		if (idx >= 0) listeners.splice(idx, 1);
+	}
+});
+
+function render (elapsed, dt) {
+	update_clock(elapsed, dt);
+	context.save();
+	context.scale($pixelRatio, $pixelRatio);
+	listeners.forEach(entity => {
+		try {
+			if (entity.mounted && entity.ready && entity.render) {
+				entity.render($props, dt);
+			}
+		} catch (err) {
+			console.error(err);
+			if (killLoopOnError) {
+				cancelAnimationFrame(frame);
+				console.warn('Animation loop stopped due to an error');
+			}
 		}
 	});
-	
-	function render (elapsed, dt) {
-		time.set(elapsed);
-		context.save();
-		context.scale($pixelRatio, $pixelRatio);
-		listeners.forEach(entity => {
-			try {
-				if (entity.mounted && entity.ready && entity.render) {
-					entity.render($props, dt);
-				}
-			} catch (err) {
-				console.error(err);
-				if (killLoopOnError) {
-					cancelAnimationFrame(frame);
-					console.warn('Animation loop stopped due to an error');
-				}
-			}
-		});
-		context.restore();
-	}
-	
-	function handleResize () {
-		width.set(window.innerWidth);
-		height.set(window.innerHeight);
-		pixelRatio.set(window.devicePixelRatio);
-	}
-	
-	function createLoop (fn) {
-		let elapsed = 0;
-		let lastTime = performance.now();
-		(function loop() {
-			frame = requestAnimationFrame(loop);
-			const beginTime = performance.now();
-			const dt = (beginTime - lastTime) / 1000;
-			lastTime = beginTime;
-			elapsed += dt;
-			fn(elapsed, dt);
-		})();
-		return () => {
-			cancelAnimationFrame(frame);
-		};
-	}
+	context.restore();
+}
+
+function handleResize () {
+	width.set(window.innerWidth);
+	height.set(window.innerHeight);
+	pixelRatio.set(window.devicePixelRatio);
+}
+
+function createLoop (fn) {
+	let elapsed = 0;
+	let lastTime = performance.now();
+	(function loop() {
+		frame = requestAnimationFrame(loop);
+		const beginTime = performance.now();
+		const dt = (beginTime - lastTime) / 1000;
+		lastTime = beginTime;
+		elapsed += dt;
+		fn(elapsed, dt);
+	})();
+	return () => {
+		cancelAnimationFrame(frame);
+	};
+}
+
+
 </script>
 
 <canvas
