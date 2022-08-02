@@ -1,7 +1,7 @@
 <script>
 import * as engine from './engine.js';
 
-export const top_left = [20, 20];
+export const top_left = [100, 20];
 export const width = 800;
 export const height = 40;
 
@@ -11,6 +11,7 @@ const inner_height = 40 - PADDING[1];
 
 
 let is_dragging = false;
+let pre_down_state = engine.is_paused();
 
 function pos(px, py) {
 	const res = [top_left[0] + px*inner_width + PADDING[0]/2, 
@@ -86,7 +87,8 @@ function on_down(event) {
 	if(is_inside(pos)) {
 		event.preventDefault();
 		event.stopPropagation();
-		engine.pause();
+		pre_down_state = engine.pause_ctrl.current();
+		engine.pause_ctrl.pause();
 		engine.set_playback_time_rel(x_to_rel(pos[0]));
 		is_dragging = true;
 	}
@@ -103,8 +105,15 @@ function on_move(event) {
 }
 
 function on_up(event) {
-	is_dragging = false;
-	engine.unpause();
+	// Important to check is_dragging before resuming, as another control
+	// element may have done the pausing/unpausing.
+	if(is_dragging) {
+		// Only resume if it was running beforehand.
+		if(!pre_down_state) {
+			engine.pause_ctrl.resume();
+		} 
+		is_dragging = false;
+	}
 }
 
 engine.renderable({ 

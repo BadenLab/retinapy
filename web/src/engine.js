@@ -8,6 +8,33 @@ export const pixelRatio = writable(window.devicePixelRatio);
 export const context = writable();
 export const canvas = writable();
 export const time = writable(0);
+export const pause_ctrl = (() => {
+	const {subscribe, set, update } = writable(false);
+	const pause = () => {
+		console.log('paused');
+		set(true);
+	}
+	const resume = () => {
+		console.log('resumed');
+		set(false);
+	}
+	const toggle = () => {
+		update(v => !v);
+	}
+
+	const current = () => {
+		//return get(subscribe);
+		// Hacky
+		return get(pause_ctrl);
+	}
+	return {
+		subscribe,
+		pause,
+		resume, 
+		toggle,
+		current
+	}
+})();
 
 //export const snippets = writable([]);
 //export const playback_speed = writable(0.05);
@@ -32,7 +59,6 @@ export const props = deriveObject({
 
 let _playback_time = 0;
 let _time = 0;
-let _is_paused = false;
 let _playback_speed = 0.05;
 let _sample_rate = 99.182;
 let _snippet_len = 120;
@@ -41,7 +67,7 @@ let _snippets = [];
 
 export function update_clock(cur_time, dt) {
 	_time = cur_time;
-	if(!_is_paused) {
+	if(!get(pause_ctrl)) {
 		_playback_time = (_playback_time + dt * _playback_speed) % playback_duration();
 	}
 }
@@ -60,15 +86,7 @@ export function snippet_pad() {
 }
 
 export function is_paused() {
-	return is_paused;
-}
-
-export function pause() {
-	_is_paused = true;
-}
-
-export function unpause() {
-	_is_paused = false;
+	return get(pause_ctrl);
 }
 
 export function playback_time() {
