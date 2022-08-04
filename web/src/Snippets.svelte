@@ -24,7 +24,6 @@ function kth_box(k, c_width) {
 
 
 function draw_sample(sample, idx, width, ctx) {
-// [0, 1, 0, 1]
 	const box = kth_box(idx, width);
 
 	ctx.lineWidth = 2;
@@ -34,7 +33,7 @@ function draw_sample(sample, idx, width, ctx) {
 	ctx.fillStyle = `rgb(${sample[2]*255}, 0, ${sample[2]*255})`;
 	ctx.fillRect(...box);
 
-	const dr = 4;
+	const dr = 3;
 	const smaller_box = [box[0] + dr, box[1] + dr, box[2] - 2*dr, box[3] - 2*dr];
 	let rgb =  [sample[0]*250, sample[1]*240, sample[3]*210];
 	ctx.fillStyle = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`
