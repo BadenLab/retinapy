@@ -59,12 +59,14 @@ class CompressedSpikeRecording:
         self.num_sensor_samples = num_sensor_samples
 
     def __str__(self):
-        res = f"Recording: {self.name}, " \
-              f"sensor sample rate: {self.sensor_sample_rate} Hz, " \
-              f"num samples: {self.num_sensor_samples}, " \
-              f"duration: {self.duration():.1f} seconds, " \
-              f"stimulus pattern shape: {self.stimulus_pattern.shape}," \
-              f"num clusters: {len(self.cluster_ids)}."
+        res = (
+            f"Recording: {self.name}, "
+            f"sensor sample rate: {self.sensor_sample_rate} Hz, "
+            f"num samples: {self.num_sensor_samples}, "
+            f"duration: {self.duration():.1f} seconds, "
+            f"stimulus pattern shape: {self.stimulus_pattern.shape},"
+            f"num clusters: {len(self.cluster_ids)}."
+        )
         return res
 
     def duration(self):
@@ -91,17 +93,46 @@ class SpikeRecording:
         self.sample_rate = sample_rate
 
     def __str__(self):
-        res = f"Recording: {self.name}, " \
-              f"sample rate: {self.sample_rate:.1f} Hz " \
-              f"({1000/self.sample_rate:.3f} ms per sample), " \
-              f"duration: {self.duration():.1f} seconds, " \
-              f"stimulus shape: {self.stimulus.shape}, " \
-              f"spikes shape: {self.spikes.shape}, " \
-              f"num clusters: {len(self.cluster_ids)}."
+        res = (
+            f"Recording: {self.name}, "
+            f"sample rate: {self.sample_rate:.1f} Hz "
+            f"({1000/self.sample_rate:.3f} ms per sample), "
+            f"duration: {self.duration():.1f} seconds, "
+            f"stimulus shape: {self.stimulus.shape}, "
+            f"spikes shape: {self.spikes.shape}, "
+            f"num clusters: {len(self.cluster_ids)}."
+        )
         return res
+
+    def __len__(self):
+        assert len(self.stimulus) == len(self.spikes)
+        return len(self.stimulus)
 
     def duration(self):
         return self.stimulus.shape[0] / self.sample_rate
+
+    def __getitem__(self, key):
+        return SpikeRecording(
+            f"{self.name}-{str(key)}",
+            self.stimulus[key],
+            self.spikes[key],
+            self.cluster_ids,
+            self.sample_rate,
+        )
+
+
+def split(recording: SpikeRecording, split_ratio):
+    divisions = np.sum(np.array(split_ratio))
+    num_per_division, remainder = divmod(len(recording), divisions)
+    splits = []
+    slice_start = 0
+    # Give all of the remainder to the first split.
+    slice_end = split_ratio[0] * num_per_division + remainder 
+    for r in split_ratio:
+        splits.append(recording[slice_start:slice_end])
+        slice_start = slice_end
+        slice_end += num_per_division
+    return splits
 
 
 def load_stimulus_pattern(file_path: str) -> np.ndarray:
@@ -323,7 +354,7 @@ def decompress_stimulus(
     # after the last trigger event. This makes the last trigger special in that
     # it doesn't mark the start of a new stimulus output.
     logging.info(
-        "Starting: decompressing stimulus. Resulting shape ({total_length})."
+        f"Starting: decompressing stimulus. Resulting shape ({total_length})."
     )
     # If this becomes a bottleneck, there are some tricks to reach for:
     # https://stackoverflow.com/questions/60049171/fill-values-in-numpy-array-that-are-between-a-certain-value

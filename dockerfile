@@ -118,6 +118,7 @@ RUN conda install --yes \
 	build \
 	twine \
 	h5py \
+	scikit-learn \
     #ipykernel>=6 \
     # xeus-python \
     ipywidgets && \
@@ -144,6 +145,8 @@ RUN pip install \
 		einops \
 		ipympl \
 		cprofilev \
+		configargparse \
+		pyyaml \
 		mypy 
 
 
