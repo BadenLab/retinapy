@@ -147,6 +147,7 @@ RUN pip install \
 		cprofilev \
 		configargparse \
 		pyyaml \
+		tensorboard \
 		mypy 
 
 
