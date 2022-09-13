@@ -32,22 +32,34 @@ class Decoder1dBlock(nn.Module):
 
 
 class Residual1dBlock(nn.Module):
-    def __init__(self, in_n, mid_n, out_n, downsample=False):
+    def __init__(
+        self,
+        in_n,
+        mid_n,
+        out_n,
+        kernel_size=3,
+        downsample=False):
         super(Residual1dBlock, self).__init__()
         self.downsample = downsample
-        stride = 2 if self.downsample else 1
         self.conv1 = nn.Conv1d(
             in_n, mid_n, kernel_size=1, stride=1, padding=0, dilation=1
         )
+        stride = 2 if self.downsample else 1
+        padding = kernel_size // 2
         self.conv2 = nn.Conv1d(
-            in_n, mid_n, kernel_size=5, stride=stride, padding=2, dilation=1
+            mid_n,
+            mid_n,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=1,
         )
         self.conv3 = nn.Conv1d(
             mid_n, out_n, kernel_size=1, stride=1, padding=0, dilation=1
         )
-        self.bn1 = nn.BatchNorm1d(in_n)
+        self.bn1 = nn.BatchNorm1d(mid_n)
         self.bn2 = nn.BatchNorm1d(mid_n)
-        self.bn3 = nn.BatchNorm1d(mid_n)
+        self.bn3 = nn.BatchNorm1d(out_n)
         if downsample:
             self.shortcut_downsample = nn.Conv1d(
                 in_n,
@@ -131,10 +143,12 @@ class FcBlock(nn.Module):
         ans = self.net(input)
         return ans
 
+
 class Conv1dSame(torch.nn.Module):
     """1D convolution that pads to keep spatial dimensions equal.
     Cannot deal with stride. Only quadratic kernels (=scalar kernel_size).
     """
+
     def __init__(
         self,
         in_channels,

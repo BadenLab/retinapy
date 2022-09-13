@@ -141,14 +141,82 @@ def test_load_3brain_recordings():
     assert len(res) == 2
 
 
+def test_split(exp12):
+    """Tests splitting a recording into multiple parts.
+
+    Tests that:
+        1. A split works.
+        2. zero-value ratio causes an error.
+    """
+    # Test 1
+    # Setup
+    splits = (3, 1, 1)
+    expected_len = 892863
+    assert len(exp12) == expected_len
+    expected_split_lens = [535716 + 3, 178572, 178572]
+    expected_split_lens_reversed = [178572 + 3, 178572, 535716]
+    assert len(exp12) == sum(expected_split_lens)
+    # Test
+    res = mea.split(exp12, splits)
+    assert len(res) == 3, "There should be 3 splits."
+    assert [
+        len(s) for s in res
+    ] == expected_split_lens, "Splits should be the correct length."
+    # Do it again but reversed.
+    res = mea.split(exp12, splits[::-1])
+    assert len(splits) == 3, "There should be 3 splits."
+    assert [
+            len(s) for s in res
+            ] == expected_split_lens_reversed, "Splits should be the correct length."
+
+    # Test 2
+    with pytest.raises(ValueError):
+        mea.split(exp12, (0, 1, 1))
+
+
+def test_mirror_split(exp12):
+    """Tests splitting a recording into multiple parts (the mirrored version).
+
+    Tests that:
+        1. A split works.
+        2. zero-value ratio causes an error.
+    """
+    # Test 1
+    # Setup
+    splits = (3, 1, 1)
+    expected_len = 892863
+    assert len(exp12) == expected_len
+    # Note how the remainders fall in different places compared to the 
+    # non-mirrored split. This is due to the mirrored split calling split
+    # twice, under the hood.
+    expected_split_lens = [535716 + 1, 178572, 178572 + 2]
+    expected_split_lens_reversed = [178572 + 1, 178572, 535716 + 2]
+    assert len(exp12) == sum(expected_split_lens)
+    # Test
+    res = mea.mirror_split(exp12, splits)
+    assert len(res) == 3, "There should be 3 splits."
+    assert [
+        len(s) for s in res
+    ] == expected_split_lens, "Splits should be the correct length."
+    # Do it again but reversed.
+    res = mea.mirror_split(exp12, splits[::-1])
+    assert len(splits) == 3, "There should be 3 splits."
+    assert [
+            len(s) for s in res
+            ] == expected_split_lens_reversed, "Splits should be the correct length."
+
+    # Test 2
+    with pytest.raises(ValueError):
+        mea.split(exp12, (0, 1, 1))
+
+
 def test_decompress_recording(caplog, comp_exp12):
     """
     Test decompressing a recording.
 
-    Tests:
-        1. Simple decompression, no errors expected.
-        2. Too much downsample should cause an error.
-        3. Allowing collisions should prevent an exception.
+    Tests that:
+        1. Simple decompression works (basic checks).
+        2. Multiple spikes in the same bucket is allowed.
     """
     # Test 1
     downsample = 18
@@ -159,26 +227,23 @@ def test_decompress_recording(caplog, comp_exp12):
 
     # Test 2
     downsample = 100
-    with pytest.raises(ValueError):
-        mea.decompress_recording(comp_exp12, downsample)
-
-    # Test 3
-    downsample = 100
-    expected_sample_rate = orig_freq / downsample
-    with caplog.at_level(logging.WARNING):
-        res = mea.decompress_recording(
-            comp_exp12, downsample, allow_collisions=True
-        )
-        assert "Multiple spikes occured in the same bucket" in caplog.text
-    assert res.sample_rate == pytest.approx(expected_sample_rate)
+    res = mea.decompress_recording(comp_exp12, downsample)
+    max_per_bucket = np.max(res.spikes)
+    assert max_per_bucket == 3
 
 
 def test_single_3brain_recording(
     stimulus_pattern, recorded_stimulus, response_data
 ):
+    """
+    Tests that:
+        1. A recording can be loaded without errors (very basic checks).
+        2. Filtering by cluster id works.
+        3. Requesting non-existing clusters raises an error.
+    """
+    # Test 1
     # Setup
     expected_num_samples = 16071532
-
     # Test
     rec = mea.single_3brain_recording(
         "Chicken_17_08_21_Phase_00",
@@ -192,12 +257,44 @@ def test_single_3brain_recording(
     # as the ELECTRODE_FREQ value.
     assert rec.sensor_sample_rate == pytest.approx(mea.ELECTRODE_FREQ)
 
+    # Test 2
+    # Setup
+    cluster_ids = {13, 14, 202, 1485}
+    # Test
+    rec = mea.single_3brain_recording(
+        "Chicken_17_08_21_Phase_00",
+        stimulus_pattern,
+        recorded_stimulus,
+        response_data,
+        cluster_ids,
+    )
+    assert len(rec.spike_events) == len(cluster_ids)
+    assert len(rec.cluster_ids) == len(cluster_ids)
+    assert set(rec.cluster_ids) == cluster_ids
+
+    # Test 3
+    # Setup
+    partially_existing_clusters = {
+        13,  # Exists
+        14,  # Exists
+        18,  # Does not exist
+    }
+    # Test
+    with pytest.raises(ValueError):
+        mea.single_3brain_recording(
+            "Chicken_17_08_21_Phase_00",
+            stimulus_pattern,
+            recorded_stimulus,
+            response_data,
+            partially_existing_clusters,
+        )
+
 
 def test_decompress_stimulus():
     """
-    Tests:
-        1. Decompression with no downsample.
-        2. Decompression with downsample.
+    Tests that:
+        1. Decompression with no downsample works.
+        2. Decompression with downsample works.
             - This test overlaps a bit with test_downsample_stimulus
         3. Invalid trigger start should cause an exception.
     """
@@ -255,6 +352,47 @@ def test_decompress_stimulus():
         )
 
 
+def test_factors_sorted_by_count():
+    """
+    Tests that:
+        1. A simple case:
+            1. There are no duplicates.
+            2. The factors are sorted by count.
+        2. Setting a limit will cause the list to be truncated.
+        3. If no factorizations meet the limit requirement, a fallback is
+            returned.
+        4. For a prime, the parameter is returned as is.
+    """
+    # Test 1
+    num = 12
+    expected = ((2, 2, 3), (2, 6), (3, 4), (12,))
+    # Test 1
+    res = mea.factors_sorted_by_count(num)
+    assert set(res) == set(expected)
+
+    # Test 2
+    num = 12
+    expected = ((2, 2, 3), (3, 4))
+    res = mea.factors_sorted_by_count(num, limit=5)
+    assert set(res) == set(expected)
+    expected = ((2, 2, 3), (2, 6), (3, 4))
+    res = mea.factors_sorted_by_count(num, limit=6)
+    assert set(res) == set(expected), "The limit should be inclusive."
+
+    # Test 3
+    num = 2 * 2 * 13 * 13
+    # Note: note how the result is not really ideal (13, 13, 4) would be better.
+    expected = ((2, 2, 13, 13),)
+    res = mea.factors_sorted_by_count(num, limit=5)
+    assert set(res) == set(expected)
+
+    # Test 4
+    num = 89
+    expected = ((89,),)
+    res = mea.factors_sorted_by_count(num)
+    assert res == expected
+
+
 def test_downsample_stimulus():
     # Setup
     # fmt: off
@@ -294,32 +432,29 @@ def test_decompress_spikes1():
     downsample_by = 9
     num_sensor_samples = 123
     # fmt: off
-    spike_times1 = np.array([0, 1, 8, 9, 10, 27, 30, 40, 50, 70, 80, 90, 100, 110])
-    spike_times2 = np.array([8, 9, 30, 40, 50, 70, 80, 90, 100, 110])
+    spike_times1 = np.array([8, 9, 30, 40, 50, 70, 80, 90, 100, 110])
+    spike_times2 = np.array([0, 1, 8, 9, 10, 27, 30, 40, 50, 70, 80, 90, 100, 110])
 
-    # input index:          [0, 9, 18, 27, 36, 45, 54, 63, 72, 81, 90, 99, 108, 117]
-    # output index          [0, 1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11,  12,  13]
-    spike_counts1 = np.array([3, 2,  0,  2,  1,  1,  0,  1,  1,  0,  1,  1,  1,  0])
-    spike_counts2 = np.array([1, 1,  0,  1,  1,  1,  0,  1,  1,  0,  1,  1,  1,  0])
+    spike_counts1 = np.array([1, 1,  0,  1,  1,  1,  0,  1,  1,  0,  1,  1,  1,  0])
+    spike_counts2 = np.array([3, 2,  0,  2,  1,  1,  0,  1,  1,  0,  1,  1,  1,  0])
     # fmt: on
-
     expected_output_len = math.ceil(num_sensor_samples / downsample_by)
-    expected_ones_mask = np.zeros(expected_output_len, dtype=bool)
-    expected_ones_mask[spike_times1 // downsample_by] = True
-    expected_zeros_mask = ~expected_ones_mask
+    assert len(spike_counts1) == len(spike_counts2) == expected_output_len
 
     # Test 1
-    # There should be an error thrown, as two samples land in the same bucket.
-    with pytest.raises(ValueError):
-        mea.decompress_spikes(spike_times1, num_sensor_samples, downsample_by)
+    spikes = mea.decompress_spikes(
+        spike_times1, num_sensor_samples, downsample_by
+    )
+    assert np.array_equal(spikes, spike_counts1)
 
     # Test 2
+    # Test the case where two spikes land in the same bucket.
+    # There should *not* be an error thrown, even though two samples land in
+    # the same bucket.
     spikes = mea.decompress_spikes(
         spike_times2, num_sensor_samples, downsample_by
     )
-    assert spikes.shape == (expected_output_len,)
-    assert np.all(spikes[expected_ones_mask] == True)
-    assert np.all(spikes[expected_zeros_mask] == False)
+    assert np.array_equal(spikes, spike_counts2)
 
 
 def test_decompress_spikes2(response_data):

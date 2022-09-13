@@ -4,7 +4,7 @@ import logging
 import math
 import pathlib
 import pickle
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Tuple, Union, Sequence, Optional, Set
 
 import numpy as np
 import pandas as pd
@@ -72,6 +72,26 @@ class CompressedSpikeRecording:
     def duration(self):
         return self.num_sensor_samples / self.sensor_sample_rate
 
+    def clusters(self, cluster_ids: Set[int]):
+        """Returns a new recording with only the specified clusters."""
+        if not cluster_ids.issubset(self.cluster_ids):
+            raise ValueError(
+                f"Cluster ids ({cluster_ids}) are not a subset of "
+                f"the cluster ids in this recording ({self.cluster_ids})."
+            )
+        spike_events = [
+            self.spike_events[self.cluster_ids.index(i)] for i in cluster_ids
+        ]
+        return CompressedSpikeRecording(
+            self.name,
+            self.stimulus_pattern,
+            self.stimulus_events,
+            spike_events,
+            list(cluster_ids),
+            self.sensor_sample_rate,
+            self.num_sensor_samples,
+        )
+
 
 class SpikeRecording:
     def __init__(self, name, stimulus, spikes, cluster_ids, sample_rate):
@@ -120,18 +140,115 @@ class SpikeRecording:
             self.sample_rate,
         )
 
+    def clusters(self, cluster_ids: Set[int]):
+        """Returns a new recording with only the specified clusters."""
+        if not cluster_ids.issubset(self.cluster_ids):
+            raise ValueError(
+                f"Cluster ids ({cluster_ids}) are not a subset of "
+                f"the cluster ids in this recording ({self.cluster_ids})."
+            )
+        cluster_indices = [self.cluster_ids.index(i) for i in cluster_ids]
+        return SpikeRecording(
+            self.name,
+            self.stimulus,
+            self.spikes[:, cluster_indices],
+            cluster_ids,
+            self.sample_rate,
+        )
 
-def split(recording: SpikeRecording, split_ratio):
-    divisions = np.sum(np.array(split_ratio))
+    def extend(self, recording):
+        if self.sample_rate != recording.sample_rate:
+            raise ValueError(
+                f"Sample rates do not match. Got ({self.sample_rate}) and "
+                f"({recording.sample_rate})."
+            )
+        if self.stimulus.shape[1] != recording.stimulus.shape[1]:
+            raise ValueError(
+                f"The stimulus must have the same number of LEDs. Got "
+                f"({self.stimulus.shape[1]}) and "
+                f"({recording.stimulus.shape[1]})."
+            )
+        if not np.array_equal(self.cluster_ids, recording.cluster_ids):
+            raise ValueError(
+                f"Cluster ids do not match. Got ({self.cluster_ids}) and "
+                f"({recording.cluster_ids})."
+            )
+        self.stimulus = np.concatenate((self.stimulus, recording.stimulus))
+        self.spikes = np.concatenate((self.spikes, recording.spikes))
+        return self
+
+
+def split(recording: SpikeRecording, split_ratio: Sequence[int]):
+    """Split a recording into multiple recordings.
+
+    Args:
+        split_ratio: a list of weightings that determines how much data to
+            give each split. For example, you might use the triplet (3, 1, 1)
+            to create a train-val-test split with 60% of the data for training,
+            20% for validation, and 20% for testing.
+    """
+    if not all([r > 0 for r in split_ratio]):
+        raise ValueError(f"Split ratios must be positive. Got ({split_ratio}).")
+    divisions = sum(split_ratio)
     num_per_division, remainder = divmod(len(recording), divisions)
     splits = []
-    slice_start = 0
-    # Give all of the remainder to the first split.
-    slice_end = split_ratio[0] * num_per_division + remainder 
-    for r in split_ratio:
+    slice_start = slice_end = 0
+    for i in range(len(split_ratio)):
+        if i == 0:
+            # Give all of the remainder to the first split.
+            slice_end = split_ratio[i] * num_per_division + remainder
+        else:
+            slice_end += split_ratio[i] * num_per_division
         splits.append(recording[slice_start:slice_end])
         slice_start = slice_end
-        slice_end += num_per_division
+    total_len = sum([len(s) for s in splits])
+    assert total_len == len(
+        recording
+    ), f"Split lengths do not match ({total_len}) vs ({len(recording)})."
+    return splits
+
+
+def mirror_split(recording: SpikeRecording, split_ratio: Sequence[int]):
+    """Split data from "outside-in".
+
+    This approach of splitting the data tries to address the issue that the
+    response of the retina will change over time. Training the model with the
+    earlier responses and validating or testing with the later responses will
+    likely lead to reduced accuracy that is not the fault of the model.
+
+    One way to ammeliorate this issue is to give each split a piece of the
+    earlier data and a piece of the later data. There is still some flexibility
+    in how to make this choice. If there are three splits (train, val, test),
+    then they will be made as follows:
+
+        +-------+------+----+----+------+-------+
+        | train | val  |  test   | val  | train |
+        +-------+------+----+----+------+-------+
+
+    The benefit of this approach is that each split is not exposed soley to
+    one end of the data. Additionally, the test data, which will often appear
+    in reports will still exist as a continuous block of data.
+
+    Args:
+        split_ratio: a list of weightings that determines how much data to
+            give each split. For example, you might use the triplet (3, 1, 1)
+            to create a train-val-test split with 60% of the data for training,
+            20% for validation, and 20% for testing.
+    """
+    if not all([r > 0 for r in split_ratio]):
+        raise ValueError(f"Split ratios must be positive. Got ({split_ratio}).")
+    recording_half1 = recording[: len(recording) // 2]
+    recording_half2 = recording[len(recording) // 2 :]
+    assert len(recording_half1) + len(recording_half2) == len(recording)
+    splits_half1 = split(recording_half1, split_ratio)
+    splits_half2 = split(recording_half2, tuple(reversed(split_ratio)))
+    splits = [
+        s1.extend(s2) for (s1, s2) in zip(splits_half1, reversed(splits_half2))
+    ]
+    total_len = sum([len(s) for s in splits])
+    assert total_len == len(
+        recording
+    ), f"Split lengths do not match ({total_len}) vs ({len(recording)})."
     return splits
 
 
@@ -232,7 +349,7 @@ def load_3brain_recordings(
     stimulus_pattern_path: str,
     stimulus_recording_path: str,
     response_recording_path: str,
-    include: List[str] = None,
+    include: Optional[List[str]] = None,
 ) -> List[CompressedSpikeRecording]:
     """
     Creates a CompressedSpikeRecording for each recording in the 3Brain data.
@@ -258,6 +375,7 @@ def single_3brain_recording(
     stimulus_pattern: np.ndarray,
     stimulus_recordings: pd.DataFrame,
     response_recordings: pd.DataFrame,
+    include_clusters: Optional[Set[int]] = None,
 ) -> CompressedSpikeRecording:
     stimulus_row, response_rows = stim_and_spike_rows(
         rec_name, stimulus_recordings, response_recordings
@@ -267,6 +385,13 @@ def single_3brain_recording(
         raise ValueError(
             f'Only stimulus type "FF_NOISE" is currently '
             f'supported. Got ({stimulus_row["Stimulus_name"]})'
+        )
+    if include_clusters and not include_clusters.issubset(
+        set(response_rows.index)
+    ):
+        raise ValueError(
+            f"Cluster ids ({include_clusters}) are not a subset of "
+            f"the cluster ids in this recording {tuple(response_rows.index)}."
         )
     # TODO: is 'End_Fr' inclusive? If so, add 1 below. Assuming yes for now.
     stimulus_events = stimulus_row["Trigger_Fr_relative"].astype(int)
@@ -279,6 +404,8 @@ def single_3brain_recording(
     spikes_per_cluster = []
     cluster_ids = []
     for cluster_id, cluster_row in response_rows.iterrows():
+        if include_clusters is not None and cluster_id not in include_clusters:
+            continue
         spikes = cluster_row["Spikes"].compressed().astype(int)
         assert not np.ma.isMaskedArray(spikes), "Don't forget to decompress!"
         spikes_per_cluster.append(spikes),
@@ -298,9 +425,7 @@ def single_3brain_recording(
 
 
 def decompress_recording(
-    recording: CompressedSpikeRecording,
-    downsample: int,
-    allow_collisions: bool = False,
+    recording: CompressedSpikeRecording, downsample: int
 ) -> SpikeRecording:
     """
     Decompress a compressed recording.
@@ -321,9 +446,7 @@ def decompress_recording(
     )
     spikes = np.stack(
         [
-            decompress_spikes(
-                s, recording.num_sensor_samples, downsample, allow_collisions
-            )
+            decompress_spikes(s, recording.num_sensor_samples, downsample)
             for s in recording.spike_events
         ],
         axis=1,
@@ -379,7 +502,6 @@ def decompress_spikes(
     spikes: Union[np.ndarray, np.ma.MaskedArray],
     num_sensor_samples: int,
     downsample_factor: int = 1,
-    allow_collisions: bool = False,
 ) -> np.ndarray:
     """
     Fills an True/False array depending on whether a spike occurred.
@@ -389,53 +511,62 @@ def decompress_spikes(
     if np.ma.isMaskedArray(spikes):
         spikes = spikes.compressed()
     downsampled_spikes = np.floor_divide(spikes, downsample_factor)
-    is_collision = (
-        len(downsampled_spikes) > 1 and np.min(np.diff(downsampled_spikes)) < 1
-    )
-    if is_collision:
-        msg = "Multiple spikes occured in the same bucket; spikes are \
-               happening faster than the sampling rate."
-        if allow_collisions:
-            logging.warning(msg)
-        else:
-            raise ValueError(msg)
     res = np.zeros(
         shape=[
             math.ceil(num_sensor_samples / downsample_factor),
         ],
-        dtype=bool,
+        dtype=int,
     )
-    res[downsampled_spikes] = True
+    np.add.at(res, downsampled_spikes, 1)
     return res
 
 
-def factors_sorted_by_count(n, limit) -> List[Tuple[int, ...]]:
+def factors_sorted_by_count(
+    n, limit: Optional[int] = None
+) -> Tuple[Tuple[int, ...]]:
     """
     Calulates factor decomposition with sort and limit.
 
     This method is used to choose downsampling factors when a single factor
     is too large. The decompositions are sorted by the number of factors in a
-    decomposition.
+    decomposition. With this in mind, when a factorization cannot be found
+    that has all factors
+
+    Args:
+        n: The number to decompose.
+        limit: The maximum number of factors allowed in a single decomposition.
+            This is an inclusive limit. If there are no decompositions t
     """
 
     def _factors(n):
-        res = [(n,)]
+        # Use a set to avoid duplicate factors.
+        res = {(n,)}
         f1 = n // 2
         while f1 > 1:
             f2, mod = divmod(n, f1)
             if not mod:
-                res.append((f1, f2))
-                sub_factors = [
-                    a + b
-                    for (a, b) in itertools.product(_factors(f1), _factors(f2))
-                ]
-                res.extend(sub_factors)
+                res.add(tuple(sorted((f1, f2))))
+                for (a, b) in itertools.product(_factors(f1), _factors(f2)):
+                    sub_factors = tuple(sorted(a + b))
+                    res.add(sub_factors)
             f1 -= 1
         return res
 
-    factors = list(set(_factors(n)))
-    factors_under = [f for f in factors if max(f) <= limit]
-    sorted_by_count = sorted(factors_under, key=lambda x: len(x))
+    factors = _factors(n)
+    sorted_by_count = tuple(sorted(factors, key=lambda x: len(x)))
+    # If there is a limit set, remove any factor decompositions that contain a
+    # factor larger than the limit.
+    if limit:
+        factors_filtered = tuple(f for f in factors if max(f) <= limit)
+        if not factors_filtered:
+            logging.info(
+                f"No factor decomposition exists with factors under "
+                f"{limit}. Returning the decomposition with the "
+                f"most factors."
+            )
+            sorted_by_count = (sorted_by_count[-1],)
+        else:
+            sorted_by_count = factors_filtered
     return sorted_by_count
 
 
@@ -454,7 +585,9 @@ def downsample_stimulus(stimulus: np.ndarray, factor: int) -> np.ndarray:
     if factor == 1:
         return stimulus
     time_axis = 0
-    logging.info("Starting: downsampling")
+    logging.info(
+        f"Starting: downsampling by {factor}. Initial length {stimulus.shape[time_axis]}."
+    )
     # SciPy recommends to never exceed 13 on a single decimation call.
     # See: https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.decimate.html
     MAX_SINGLE_DECIMATION = 13
@@ -467,7 +600,9 @@ def downsample_stimulus(stimulus: np.ndarray, factor: int) -> np.ndarray:
             stimulus, sf, ftype="fir", axis=time_axis
         )
         logging.info(f"Finished: decimating by {sf}")
-    logging.info("Finished: downsampling")
+    logging.info(
+        f"Finished: downsampling. Resulting length ({stimulus.shape[time_axis]})."
+    )
     return stimulus
 
 

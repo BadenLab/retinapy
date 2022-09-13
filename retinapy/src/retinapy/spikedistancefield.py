@@ -26,7 +26,8 @@ Notes:
       tried first).
 """
 
-def bi_distance_field(spikes: np.ndarray, default_dist):
+def bi_distance_field(spikes: np.ndarray, default_dist: int, 
+                      max_dist: Optional[int]=None):
     """
     Calculates the bi-directional distance field of a spike train.
 
@@ -40,9 +41,11 @@ def bi_distance_field(spikes: np.ndarray, default_dist):
         c) dist_before[3] = 1
         d) we can't say anything about dist_after[3] or dist_before[5].
 
-    The distance field is initialized with the default_dist value, and this
-    will also act as the maximum distance.
+    
+    The distance field is initialized with the default_dist value.
+    max_dist sets the maximum the maximum distance value.
     """
+    raise NotImplementedError("Failing test. See GitHub issue #2.")
     dist_after = np.full_like(spikes, default_dist, int)
     dist_before = np.full_like(spikes, default_dist, int)
     spike_indicies = (spikes == 1).nonzero()[0]
@@ -60,6 +63,9 @@ def bi_distance_field(spikes: np.ndarray, default_dist):
             dist_before[endpoints[idx] + 1 : endpoints[idx + 1] + 1] = np.flip(
                 r[0 : diff[idx]]
             )
+    if max_dist:
+        dist_before = np.minimum(dist_before, max_dist)
+        dist_after = np.minimum(dist_after, max_dist)
     return dist_before, dist_after
 
 
@@ -81,6 +87,17 @@ def distance_field(spikes: np.ndarray, default_distance: float):
     for s in spike_indicies:
         dist_field = np.minimum(dist_field, np.abs(all_indicies - s))
     return dist_field
+
+
+def spike_interval(spikes: np.ndarray, default_count: int):
+    """Count the timesteps between spikes"""
+    count_field = np.full_like(spikes, default_count, int)
+    spike_indicies = (spikes == 1).nonzero()[0]
+    count_field[spike_indicies] = 0
+    counts = np.diff(spike_indicies) - 1
+    for idx in range(len(counts)):
+        count_field[spike_indicies[idx] + 1 : spike_indicies[idx + 1]] = counts[idx]
+    return count_field
 
 
 def distance_field2(spikes, default_dist):
@@ -221,6 +238,7 @@ def count_inference_from_bi_df2(
     be allowed at any index from start to (end-1) inclusive (ie right open
     interval [start, end) ).
     """
+    raise NotImplementedError("TODO: fix broken tests. GitHub issue #1.")
     if dist_before.shape != dist_after.shape:
         raise ValueError("dist_before and dist_after must be the same shape.")
     if torch.any(lhs_spike >= 0):
@@ -349,6 +367,7 @@ def count_inference_from_bi_df(
     target_interval,
     max_num_spikes,
 ):
+    raise NotImplementedError("TODO: fix broken tests. GitHub issue #1.")
     if len(dist_before) != len(dist_after):
         raise ValueError("dist_before and dist_after must be the same length.")
     # A 1 element query must have r-l >= 2.

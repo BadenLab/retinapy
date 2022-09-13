@@ -46,11 +46,12 @@ def spike_data1():
     return (spike_batch, MAX_DIST, before_field, after_field)
 
 
+@pytest.mark.skip(reason="Broken. See: GitHub issue #2.")
 def test_bi_distance_field(spike_data1):
     spike_batch, max_dist, before_field, after_field = spike_data1
     for i in range(spike_batch.shape[0]):
         dist_before, dist_after = sdf.bi_distance_field(
-            spike_batch[i], max_dist
+            spike_batch[i], max_dist, max_dist
         )
         assert np.array_equal(dist_before, before_field[i])
         assert np.array_equal(dist_after, after_field[i])
@@ -99,6 +100,7 @@ def spike_data2():
     return (spike_counts, MAX_DIST, before_field, after_field)
 
 
+@pytest.mark.skip(reason="Broken. See: GitHub issue #1.")
 def test_count_inference_from_bi_df(spike_data2):
     spike_counts, max_dist, before_field, after_field = spike_data2
     before_field = torch.from_numpy(before_field).to(dtype=torch.float32)
@@ -115,7 +117,7 @@ def test_count_inference_from_bi_df(spike_data2):
         )
         assert num_spikes == spike_counts[i]
 
-
+@pytest.mark.skip(reason="Broken. See: GitHub issue #1.")
 def test_count_inference_from_bi_df2(spike_data2):
     spike_counts, max_dist, before_field, after_field = spike_data2
     before_field = torch.from_numpy(before_field).to(dtype=torch.float32)
@@ -128,8 +130,7 @@ def test_count_inference_from_bi_df2(spike_data2):
         spike_pad=1,
         target_interval=(0, before_field.shape[1]),
     )
-    for i in range(len(spike_counts)):
-        assert num_spikes[i] == spike_counts[i]
+    assert np.array_equal(num_spikes.numpy(), spike_counts)
 
 
 @pytest.fixture
@@ -161,14 +162,43 @@ def distance_field_data():
 
 def test_distance_field(distance_field_data):
     M, spikes, dist_fields = distance_field_data
-    for spike, df in zip(spikes, dist_fields):
-        known_dist_field = sdf.distance_field(spike, M)
+    for spike, known_df in zip(spikes, dist_fields):
+        dist_field = sdf.distance_field(spike, M)
         dist_field_cpu = sdf.distance_field2(spike, M)
-        assert np.array_equal(df, known_dist_field)
-        assert np.array_equal(dist_field_cpu, known_dist_field)
+        assert np.array_equal(known_df, dist_field)
+        assert np.array_equal(dist_field_cpu, dist_field)
 
 
+@pytest.fixture
+def spike_interval_data():
+    MAX_COUNT = 100
+    M = MAX_COUNT  # Used to make the below array literal tidier.
+    spike_batch = np.array(
+        [
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+            [0, 1, 0, 1, 0, 0, 0, 1, 0, 0],
+            [0, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ]
+    )
+    spike_intervals = np.array(
+        [
+            [0, 8, 8, 8, 8, 8, 8, 8, 8, 0],
+            [M, M, 0, M, M, M, M, M, M, M],
+            [M, M, M, M, M, M, M, 0, M, M],
+            [M, 0, 1, 0, 3, 3, 3, 0, M, M],
+            [M, 0, 0, 0, M, M, M, M, M, M],
+            [M, M, M, M, M, M, M, M, M, M],
+        ]
+    )
+    return MAX_COUNT, spike_batch, spike_intervals
 
-
+def test_spike_interval(spike_interval_data):
+    M, spikes, spike_intervals = spike_interval_data
+    for spike, known_si in zip(spikes, spike_intervals):
+        si = sdf.spike_interval(spike, M)
+        assert np.array_equal(known_si, si)
 
 

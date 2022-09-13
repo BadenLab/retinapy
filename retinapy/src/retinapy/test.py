@@ -82,7 +82,7 @@ def test():
                 resolution=20
             )
 
-            # We only care about subset.
+            # We only care about half.
             infer_seq = [s for s in infer_seq if s < TEST_LEN]
             infer_count = len(infer_seq)
             correct += infer_count == actual_count
