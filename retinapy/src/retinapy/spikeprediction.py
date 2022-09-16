@@ -1,9 +1,9 @@
+from os import stat
 import torch
 import retinapy
 import retinapy.models
 import retinapy.nn
 import retinapy.dataset
-import retinapy.metrics
 import retinapy.mea as mea
 import retinapy.spikedistancefield as sdf
 import argparse
@@ -15,7 +15,7 @@ from typing import Union
 import numpy as np
 import itertools
 import scipy
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 from contextlib import contextmanager
 
 
@@ -26,7 +26,7 @@ TENSORBOARD_DIR = "tensorboard"
 
 IN_CHANNELS = 4 + 1
 X_LEN = 1200
-MODEL_OUT_LEN = 400
+MODEL_OUT_LEN = 200
 VAL_LEN = 300
 PAD_FOR_LOSS_CALC = 600  # Quite often there are lengths in the range 300.
 # The pad acts as the maximum, so it's a good candidate for a norm factor.
@@ -73,29 +73,39 @@ def parse_args():
     train_parser.set_defaults(func=_train)
     # test_parser.set_defaults(func=_test)
     # fmt: off
+
+    # Model/config arguments
+    # Using -k as a filter, just like pytest.
+    # Not that there is probably a way to make the parent parser parse the
+    # shared -k option; however, this is suprisingly harder than it would seem.
+    # For now, given that there is only one such option, duplicating it seems
+    # like the best option. See the following Stack Overflow post for some
+    # discussions: https://stackoverflow.com/questions/50543820/argparse-options-for-subparsers-override-main-if-both-share-parent
+    test_parser.add_argument("-k", type=str, default=None, metavar="EXPRESSION", help="Filter configs and models to train or test.")
+    train_parser.add_argument("-k", type=str, default=None, metavar="EXPRESSION", help="Filter configs and models to train or test.")
+
     # Optimization parameters
     opt_group = train_parser.add_argument_group("Optimizer parameters")
-    opt_group.add_argument('--lr', type=float, default=1e-5, help='Learning rate.')
-    opt_group.add_argument('--weight-decay', type=float, default=1e-6, help='weight decay (default: 2e-5)')
+    opt_group.add_argument("--lr", type=float, default=1e-5, help="Learning rate.")
+    opt_group.add_argument("--weight-decay", type=float, default=1e-6, help="weight decay (default: 2e-5)")
 
     # Data
     data_group = train_parser.add_argument_group("Data parameters")
-    data_group.add_argument('--stimulus-pattern', type=str, default=None, metavar='FILE', help='Path to stimulus pattern file.')
-    data_group.add_argument('--stimulus', type=str, default=None, metavar='FILE', help='Path to stimulus recording file.')
-    data_group.add_argument('--response', type=str, default=None, metavar='FILE', help='Path to response recording file.')
-    data_group.add_argument('--recording-name', type=str, default=None, help='Name of recording within the recording file.')
-    data_group.add_argument('--cluster-id', type=int, default=None, help='Cluster ID to train on.')
+    data_group.add_argument("--stimulus-pattern", type=str, default=None, metavar="FILE", help="Path to stimulus pattern file.")
+    data_group.add_argument("--stimulus", type=str, default=None, metavar="FILE", help="Path to stimulus recording file.")
+    data_group.add_argument("--response", type=str, default=None, metavar="FILE", help="Path to response recording file.")
+    data_group.add_argument("--recording-name", type=str, default=None, help="Name of recording within the recording file.")
+    data_group.add_argument("--cluster-id", type=int, default=None, help="Cluster ID to train on.")
 
-    train_parser.add_argument('--steps_til_val', type=int, default=10000, help='Steps until validation.')
-    #train_parser.add_argument('--steps_til_ckpt', type=int, default=10000, help='Steps until checkpoint.')
-    train_parser.add_argument('--log-interval', type=int, default=1000, help='How many batches to wait before logging a status update.')
-    train_parser.add_argument('--initial-checkpoint', type=str, default=None, help='Initialize model from the checkpoint at this path.')
-    #train_parser.add_argument('--resume', type=str, default=None, help='Resume full model and optimizer state from checkpoint path.')
-    train_parser.add_argument('--output', type=str, default=None, metavar='DIR', help='Path to output folder (default: current dir).')
-    train_parser.add_argument('--labels', type=str, default=None, help='List of experiment labels. Used for naming files and/or subfolders.')
-    train_parser.add_argument('--epochs', type=int, default=8, metavar='N', help='number of epochs to train (default: 300)')
-    train_parser.add_argument('--batch-size', type=int, default=128, help='batch size')
-    train_parser.add_argument('--val-with-train-ds-period', type=int, default=10, help='After how many validation runs with the validation data should validation be run with the training data.')
+    train_parser.add_argument("--steps-til-val", type=int, default=None, help="Steps until validation.")
+    train_parser.add_argument("--log-interval", type=int, default=1000, help="How many batches to wait before logging a status update.")
+    train_parser.add_argument("--initial-checkpoint", type=str, default=None, help="Initialize model from the checkpoint at this path.")
+    #train_parser.add_argument("--resume", type=str, default=None, help="Resume full model and optimizer state from checkpoint path.")
+    train_parser.add_argument("--output", type=str, default=None, metavar="DIR", help="Path to output folder (default: current dir).")
+    train_parser.add_argument("--labels", type=str, default=None, help="List of experiment labels. Used for naming files and/or subfolders.")
+    train_parser.add_argument("--epochs", type=int, default=8, metavar="N", help="number of epochs to train (default: 300)")
+    train_parser.add_argument("--batch-size", type=int, default=128, help="batch size")
+    train_parser.add_argument("--val-with-train-ds-period", type=int, default=10, help="After how many validation runs with the validation data should validation be run with the training data.")
     # fmt: on
 
     # First check if we have a config file to deal with.
@@ -466,14 +476,14 @@ class LinearNonLinearTrainable(Trainable):
         y = y.float().cuda()
         model_output = self.model(X)
         loss = self.loss_fn(model_output, target=y)
-        return model_output, loss  # TODO: optionally add other metrics.
+        return model_output, loss
 
     def evaluate(self, val_dl):
         predictions = []
         targets = []
         # Note: the loss per batch is averaged, so we are averaging this again
         # as we loop through each batch.
-        loss_meter = retinapy.metrics.Meter("loss")
+        loss_meter = retinapy._logging.Meter("loss")
         for (X, y) in val_dl:
             X = X.float().cuda()
             y = y.float().cuda()
@@ -489,96 +499,96 @@ class LinearNonLinearTrainable(Trainable):
         targets = torch.cat(targets)
         acc = (predictions == targets).float().mean().item()
         pearson_corr = scipy.stats.pearsonr(predictions, targets)[0]
-        metrics = {
-            "loss": loss_meter.avg,
-            "accuracy": acc,
-            "pearson_corr": pearson_corr,
-        }
+        metrics = [
+            retinapy._logging.Metric("loss", loss_meter.avg, increasing=False),
+            retinapy._logging.Metric("accuracy", acc),
+            retinapy._logging.Metric("pearson_corr", pearson_corr),
+        ]
         return metrics
 
 
+# TODO: the DistFieldTrainable needs to validate only the small segment
+# specified by the dataset output len. (Not the MODEL_OUT_LEN).
+
+
 class DistFieldTrainable(Trainable):
-    def __init__(self, train_ds, val_ds, test_ds, model, model_label):
+    def __init__(
+        self, train_ds, val_ds, test_ds, model, model_label, eval_lengths
+    ):
+        """Trainable for a distance field model.
+
+        Notable is the eval_len parameter (not present in Trainable), which
+        is number of bins to consider when claculating accuracy. This is
+        needed as the you typically want to guess the number of spikes in a
+        region by using a distance field that is bigger than and contains the
+        region. So there is not a 1-1 between distance field length and the
+        number of bins over which we are counting spikes.
+        """
         super(DistFieldTrainable, self).__init__(
             train_ds, val_ds, test_ds, model, model_label
         )
         self.loss_fn = retinapy.models.DistLoss()
+        self.eval_lengths = eval_lengths
 
     def forward(self, sample):
         masked_snippet, _, dist = sample
         masked_snippet = masked_snippet.float().cuda()
         dist = dist.float().cuda()
+        # Dist model
         model_output = self.model(masked_snippet)
         loss = self.loss_fn(model_output, target=dist)
         return model_output, loss
 
+    def quick_infer(self, dist, eval_len):
+        """Quickly infer the number of spikes in the eval region.
+
+        An approximate inference used for evaluation.
+
+        Returns:
+            the number of spikes in the region.
+        """
+        threshold = 15
+        return (dist[:, 0:eval_len] < threshold).sum(dim=1)
+
     def evaluate(self, val_dl):
-        thresholds = [2, 5, 10, 15, 20]
-        threshold_accs = [
-            retinapy.metrics.Meter(f"Accuracy (t: {t}")
-            for t in range(len(thresholds))
-        ]
-        infer_counts = [0] * len(thresholds)
-        naive_acc = retinapy.metrics.Meter("naive accuracy")
-        loss_meter = retinapy.metrics.Meter("loss")
+        predictions = defaultdict(list)
+        targets = defaultdict(list)
+        loss_meter = retinapy._logging.Meter("loss")
         for (masked_snippet, target_spikes, dist) in val_dl:
-            masked_snippet = masked_snippet.float().cuda()
+            X = masked_snippet.float().cuda()
             dist = dist.float().cuda()
-            target_spikes = target_spikes.cuda()
-            model_output = self.model(masked_snippet)
-            loss = self.loss_fn(model_output, target=dist)
-            loss_meter.update(loss)
-
-            # Accuracy
-            # Un-normalize for accuracy.
+            model_output = self.model(X)
+            batch_len = X.shape[0]
+            loss_meter.update(
+                self.loss_fn(model_output, target=dist).item(),
+                batch_len,
+            )
+            # Count accuracies
+            # Unnormalize for accuracy.
             model_output *= DIST_NORM
-            dist *= DIST_NORM
-            target_interval = [0, VAL_LEN]
-            target_spikes = target_spikes[:, 0:VAL_LEN]
-            actual_counts = torch.count_nonzero(target_spikes, dim=1)
-            for idx, t in enumerate(thresholds):
-                infer_counts[idx] = sdf.quick_inference_from_df2(
-                    model_output,
-                    target_interval=target_interval,
-                    threshold=t,
-                )
-                threshold_accs[idx].update(
-                    torch.sum(infer_counts[idx] == actual_counts),
-                    n=actual_counts.shape[0],
-                )
-            # It's always 1, so commenting out.
-            # best_possible_infer = sdf.quick_inference_from_df(
-            #    dist, target_interval=target_interval, threshold=thresholds[1]
-            # )
-            # best_case_correct += torch.sum(best_possible_infer == actual_counts)
-            naive_acc.update(
-                torch.sum(actual_counts == 0), n=actual_counts.shape[0]
-            )
+            for eval_len in self.eval_lengths:
+                pred = self.quick_infer(model_output, eval_len=eval_len).cpu()
+                y = torch.sum(target_spikes[:, 0:eval_len], dim=1)  # .float()
+                predictions[eval_len].append(pred)
+                targets[eval_len].append(y)
 
-        # best_case_acc = best_case_correct / count
-        with np.printoptions(
-            precision=1, floatmode="fixed", suppress=True, linewidth=100
-        ):
-            print_idx = 0  # 0 not good for cluster idx=8
-            print(f"Actual dist: {dist[print_idx].cpu().numpy()}")
-            print(f"Output dist: {model_output[print_idx].cpu().numpy()}")
-            print(
-                f"Diff: {(dist[print_idx] - model_output[print_idx]).cpu().numpy()}"
+        metrics = [
+            retinapy._logging.Metric("loss", loss_meter.avg, increasing=False)
+        ]
+        for eval_len in self.eval_lengths:
+            p = torch.cat(predictions[eval_len])
+            t = torch.cat(targets[eval_len])
+            acc = (p == t).float().mean().item()
+            pearson_corr = scipy.stats.pearsonr(p, t)[0]
+            metrics.append(
+                retinapy._logging.Metric(f"accuracy-{eval_len}_bins", acc)
             )
-        print("Counts\nActual, " + ", ".join(f"[t={t}]" for t in thresholds))
-        print(
-            torch.stack([v for v in [actual_counts, *infer_counts]])
-            .cpu()
-            .numpy()
-        )
-        print("Accuracy\nNaive, " + ", ".join(f"[t={t}]" for t in thresholds))
-        print(
-            torch.stack([acc.avg for acc in [naive_acc, *threshold_accs]])
-            .cpu()
-            .numpy()
-        )
-        acc_meter = threshold_accs[2]
-        return loss_meter.avg, acc_meter.avg
+            metrics.append(
+                retinapy._logging.Metric(
+                    f"pearson_corr-{eval_len}_bins", pearson_corr
+                )
+            )
+        return metrics
 
 
 def create_distfield_datasets(
@@ -640,32 +650,69 @@ def create_count_datasets(
     return train_val_test_datasets
 
 
-def create_distfield_trainable(rec, config):
-    if config.input_len not in {1600}:
-        return None
-    train_ds, val_ds, test_ds = create_distfield_datasets(
-        rec, config.input_len, config.output_len, config.downsample_factor
-    )
-    model = retinapy.models.DistanceFieldCnnModel(clamp_max=DIST_CLAMP)
-    label = f"DistFieldCnn_{config.input_length_ms}"
-    res = DistFieldTrainable(
-        train_ds,
-        val_ds,
-        test_ds,
-        model,
-        label,
-    )
-    return res
+class TrainableGroup:
+    def trainable_label(self, config):
+        raise NotImplementedError
+
+    def create_trainable(self, rec, config):
+        raise NotImplementedError
 
 
-def create_lnl_trainable(rec, config):
-    num_inputs = IN_CHANNELS * config.input_len
-    m = retinapy.models.LinearNonlinear(in_n=num_inputs, out_n=1)
-    train_ds, val_ds, test_ds = create_count_datasets(
-        rec, config.input_len, config.output_len, config.downsample_factor
-    )
-    label = f"LinearNonLinear_{config.input_len}"
-    return LinearNonLinearTrainable(train_ds, val_ds, test_ds, m, label)
+class DistFieldCnnTrainableGroup(TrainableGroup):
+    @staticmethod
+    def trainable_label(config):
+        return (
+            f"DistFieldCnn-{config.downsample_factor}"
+            f"ds_{config.input_len}in"
+        )
+
+    @staticmethod
+    def create_trainable(rec, config):
+        num_halves = {
+            1984: 4,
+            992: 3,
+            3174: 5,
+            1586: 4,
+        }
+        if config.input_len not in num_halves:
+            return None
+        train_ds, val_ds, test_ds = create_distfield_datasets(
+            rec, config.input_len, MODEL_OUT_LEN, config.downsample_factor
+        )
+        model = retinapy.models.DistanceFieldCnnModel(
+            DIST_CLAMP,
+            config.input_len + MODEL_OUT_LEN,
+            MODEL_OUT_LEN,
+            num_halves[config.input_len],
+        )
+        res = DistFieldTrainable(
+            train_ds,
+            val_ds,
+            test_ds,
+            model,
+            DistFieldCnnTrainableGroup.trainable_label(config),
+            eval_lengths=[1, 2, 5, 10, 20, 50, 100, 200],
+        )
+        return res
+
+
+class LinearNonLinearTrainableGroup(TrainableGroup):
+    @staticmethod
+    def trainable_label(config):
+        return (
+            f"LinearNonLinear-{config.downsample_factor}"
+            f"ds_{config.input_len}in_{config.output_len}out"
+        )
+
+    @staticmethod
+    def create_trainable(rec, config):
+        num_inputs = IN_CHANNELS * config.input_len
+        m = retinapy.models.LinearNonlinear(in_n=num_inputs, out_n=1)
+        train_ds, val_ds, test_ds = create_count_datasets(
+            rec, config.input_len, config.output_len, config.downsample_factor
+        )
+        label = LinearNonLinearTrainableGroup.trainable_label(config)
+        return LinearNonLinearTrainable(train_ds, val_ds, test_ds, m, label)
 
 
 def checkpoint_path(model_name, config):
@@ -792,20 +839,62 @@ def _train(out_dir):
         mea.load_response(opt.response),
         include_clusters={opt.cluster_id},
     )
-    print("Configs:", *all_configs, sep="\n")
-    logging.info(f"{len(all_configs)} models to be trained.")
-    logging.info("Starting training linear non-linear models.")
-    # filtered_configs = all_configs[14:]
-    filtered_configs = all_configs
-    for i, c in enumerate(filtered_configs):
-        t = create_lnl_trainable(rec, c)
-        logging.info(
-            f"Starting training config ({i+1}/{len(all_configs)}): {c}"
+    print("Models & Configurations")
+    print("=======================")
+    # Product of models and configs
+    trainable_groups = {
+        "LinearNonLinear": LinearNonLinearTrainableGroup,
+        "DistFieldCnn": DistFieldCnnTrainableGroup,
+    }
+
+    def run_id(model_str, config):
+        return f"{model_str}-{str(config)}"
+
+    def _match(run_id, match_str):
+        return match_str in run_id
+
+    do_trainable = dict()
+    for c in all_configs:
+        for _, tg in trainable_groups.items():
+            t_label = tg.trainable_label(c)
+            do_trainable[t_label] = _match(t_label, opt.k)
+
+    logging.info(f"Model-configs filter: {opt.k}")
+    logging.info(
+        "\n".join(
+            [
+                t_label if do_train else t_label.ljust(40) + " (skip)"
+                for t_label, do_train in do_trainable.items()
+            ]
         )
-        sub_dir = out_dir / str(c) / t.model_label
-        logging.info(f"Output directory: {sub_dir}.")
-        train(t, sub_dir)
-        logging.info(f"Finished training model")
+    )
+    total_trainables = sum(do_trainable.values())
+    logging.info(f"Total: {total_trainables} models to be trained.")
+    # filtered_configs = all_configs[14:]
+    done_trainables = set()
+    for c in all_configs:
+        for tg in trainable_groups.values():
+            t_label = tg.trainable_label(c)
+            if t_label in done_trainables:
+                continue
+            if not do_trainable[t_label]:
+                continue
+            t = tg.create_trainable(rec, c)
+            if t is None:
+                logging.warning(
+                    f"Skipping. Model ({t_label}) isn't yet supported."
+                )
+                continue
+            num_done = len(done_trainables)
+            logging.info(
+                f"Starting model training ({num_done}/{total_trainables}): "
+                f"{t_label}"
+            )
+            sub_dir = out_dir / str(t_label)
+            logging.info(f"Output directory: ({sub_dir})")
+            train(t, sub_dir)
+            logging.info(f"Finished training model")
+            done_trainables.add(t_label)
     logging.info("Finished training all linear non-linear models.")
 
 
@@ -857,62 +946,55 @@ def train(trainable, out_dir):
     model_saver = retinapy._logging.ModelSaver(out_dir, model, optimizer)
     num_epochs = opt.epochs
     step = 0
+
     for epoch in range(num_epochs):
+        loss_meter = retinapy._logging.Meter("loss")
         for sample in train_dl:
             optimizer.zero_grad()
             _, total_loss = trainable.forward(sample)
             total_loss.backward()
             optimizer.step()
-            tb_logger.train_step(step, total_loss)
+            batch_size = len(sample[0])
+            loss_meter.update(total_loss.item(), batch_size)
+            tb_logger.train_step(step, total_loss, batch_size)
 
             if step % opt.log_interval == 0:
                 _logger.info(
                     f"epoch: {epoch}/{num_epochs} | "
                     f"step: {step}/{len(train_dl)*num_epochs} | "
-                    f"loss: {total_loss.item():.5f}"
+                    f"loss: {loss_meter.avg:.5f}"
                 )
-            if step % opt.steps_til_val == 0:
+                loss_meter.reset()
+
+            if opt.steps_til_val and step % opt.steps_til_val == 0:
                 _logger.info("Running evaluation (val ds)")
                 with evaluating(model), torch.no_grad():
                     metrics = trainable.evaluate(val_dl)
                     tb_logger.val_step(step, metrics, "val-ds")
-                    _logger.info(
-                        " | ".join(
-                            [
-                                f"{name}: {value:.5f}"
-                                for name, value in metrics.items()
-                            ]
-                        )
-                    )
+                    retinapy._logging.print_metrics(metrics)
 
-            if (step + 1) % (
-                opt.steps_til_val * opt.val_with_train_ds_period
-            ) == 0:
+            test_ds_eval_enabled = (
+                opt.steps_til_val and opt.val_with_train_ds_period
+            )
+            if (
+                test_ds_eval_enabled
+                and (step + 1)
+                % (opt.steps_til_val * opt.val_with_train_ds_period)
+                == 0
+            ):
                 _logger.info("Running evaluation (train ds)")
                 with evaluating(model), torch.no_grad():
                     metrics = trainable.evaluate(val_dl)
                     tb_logger.val_step(step, metrics, "train-ds")
-                    _logger.info(
-                        " | ".join(
-                            [
-                                f"{name}: {value:.5f}"
-                                for name, value in metrics.items()
-                            ]
-                        )
-                    )
+                    retinapy._logging.print_metrics(metrics)
             step += 1
         # Evaluate and save at end of epoch.
         _logger.info("Running epoch evaluation (val ds)")
         with evaluating(model), torch.no_grad():
             metrics = trainable.evaluate(val_dl)
             tb_logger.val_step(step, metrics, "val-ds")
-            _logger.info(
-                " | ".join(
-                    [f"{name}: {value:.5f}" for name, value in metrics.items()]
-                )
-            )
-        assert "accuracy" in metrics, "'accuracy' must be in metrics."
-        model_saver.save_checkpoint(epoch, metrics["accuracy"])
+            retinapy._logging.print_metrics(metrics)
+        model_saver.save_checkpoint(epoch, metrics)
 
 
 def main():

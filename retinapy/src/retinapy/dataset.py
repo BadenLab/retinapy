@@ -119,9 +119,11 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
         dist_clamp: float,
         dist_norm: float = 1,
         enable_augmentation: bool = True,
+        enable_normalize: bool = True,
         allow_cheating: bool = False,
     ):
         self.enable_augmentation = enable_augmentation
+        self.num_stim_channels = recording.stimulus.shape[1]
         self.rng = np.random.default_rng(self.RNG_SEED)
         self.pad = pad
         self.dist_norm = dist_norm
@@ -129,11 +131,21 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
         self.ds = SnippetDataset(recording, snippet_len + self.pad)
         self.mask_slice = slice(mask_begin, mask_end)
         self.allow_cheating = allow_cheating
+        self.enable_normalize = enable_normalize
+        self.stim_mean = np.expand_dims(recording.stimulus.mean(axis=0), -1)
+        self.stim_sd = np.expand_dims(recording.stimulus.std(axis=0), -1)
+        # The stimulus mean will be dominated by the mask
+        mask_len = mask_end - mask_begin
+        self.spike_mean = mask_len * self.MASK_VALUE / snippet_len
+        self.spike_sd = (
+            mask_len * (self.MASK_VALUE - self.spike_mean) ** 2
+            + (snippet_len - mask_len) * self.spike_mean**2
+        ) / snippet_len
 
     def __len__(self):
         return len(self.ds)
 
-    def _stimulus_transform(self, stimulus):
+    def _augment_stimulus(self, stimulus):
         """
         Augment a stimulus portion of a sample.
         """
@@ -142,7 +154,16 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
         res = stimulus * noise
         return res
 
-    def _spikes_transform(self, spikes):
+    def normalize(self, snippet):
+        snippet[0 : self.num_stim_channels, :] = (
+            snippet[0 : self.num_stim_channels, :] - self.stim_mean
+        ) / self.stim_sd
+        snippet[self.num_stim_channels :, :] = (
+            snippet[self.num_stim_channels :] - self.spike_mean
+        ) / self.spike_sd
+        return snippet
+
+    def _augment_spikes(self, spikes):
         """
         "Augment the spike portion of a sample.
 
@@ -150,7 +171,7 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
         portion that we are trying to predict.
         """
         spike_indicies = np.nonzero(spikes)
-        spikes[spike_indicies] = False
+        spikes[spike_indicies] = 0
         # Add jitter
         jitter = self.rng.integers(
             -self.NOISE_JITTER, self.NOISE_JITTER, len(spike_indicies)
@@ -174,30 +195,37 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
         +---------------------------------+-------------+---------+
 
         Note (d*): there is an extra bit of spike data used when creating
-        a sample, here called a pad. The pad is used to calculate the ground 
-        truth distance field. This bit of data is not placed in the sample that 
+        a sample, here called a pad. The pad is used to calculate the ground
+        truth distance field. This bit of data is not placed in the sample that
         is returned.
         """
         # 1. Get the snippet. Make it extra long, for the distance field calc.
         extra_long_stimulus, extra_long_spikes = self.ds[idx]
-        extra_long_spikes = extra_long_spikes.astype(int)
+        extra_long_spikes = extra_long_spikes.astype(float)
         # 2. Optional augmentation.
         if self.enable_augmentation:
-            extra_long_stimulus = self._stimulus_transform(extra_long_stimulus)
-            extra_long_spikes[
-                0 : self.mask_slice.start
-            ] = self._spikes_transform(
+            extra_long_stimulus = self._augment_stimulus(extra_long_stimulus)
+            extra_long_spikes[0 : self.mask_slice.start] = self._augment_spikes(
                 extra_long_spikes[0 : self.mask_slice.start]
             )
-        # 3. Calculate the distance field.
+        # 4. Calculate the distance field.
         dist = sdf.distance_field(extra_long_spikes, self.dist_clamp)
         # With the distance field calculated, we can throw away the extra bit.
         dist = dist[self.mask_slice]
+        # TODO: move into norm function.
         normed_dist = dist / self.dist_norm
         target_spikes = np.array(extra_long_spikes[self.mask_slice], copy=True)
         if not self.allow_cheating:
             extra_long_spikes[self.mask_slice] = self.MASK_VALUE
-        extra_long_snippet = np.vstack((extra_long_stimulus, extra_long_spikes))
-        # Remove the extra padding that was used to calculate the distance fields.
-        snippet = extra_long_snippet[:, 0 : -self.pad]
+        # 5. Remove the extra padding that was used to calculate the distance fields.
+        stimulus = extra_long_stimulus[:, 0 : -self.pad]
+        spikes = extra_long_spikes[0 : -self.pad]
+        # 6. Stack stimulus and spike data to make X.
+        snippet = np.vstack((stimulus, spikes))
+        # 7. Normalize
+        # TODO: what about cheating? Why now?
+        if self.enable_normalize:
+            snippet = self.normalize(snippet)
+            #stimulus = (stimulus - self.stim_mean) / self.stim_sd
+            #spikes = (spikes - self.spike_mean) / self.spike_sd
         return snippet, target_spikes, normed_dist

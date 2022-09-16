@@ -21,14 +21,14 @@ def load_model(model, checkpoint_path: Union[str, pathlib.Path]):
     if checkpoint_path.is_dir():
         checkpoint_path = list(checkpoint_path.glob("*.pth"))[-1]
 
-    _logger.info(f"Loading model from {checkpoint_path}.")
+    _logger.info(f"Loading model from ({checkpoint_path}).")
     checkpoint_state = torch.load(checkpoint_path)
     model_state = checkpoint_state["model"]
     model.load_state_dict(model_state)
 
 
 def save_model(model, path: pathlib.Path, optimizer=None):
-    _logger.info(f"Saving model to {path}")
+    _logger.info(f"Saving model to ({path})")
     if not path.parent.exists():
         path.parent.mkdir(parents=True)
     state = {
@@ -88,8 +88,88 @@ class DistanceFieldCnnModel(nn.Module):
     LED_CHANNELS = 4
     NUM_CLUSTERS = 1
 
-    def __init__(self, clamp_max):
+    def __init__(self, clamp_max, in_len, out_len, num_halves):
         super(DistanceFieldCnnModel, self).__init__()
+        self.in_len = in_len
+        self.out_len = out_len
+        self.num_halves = num_halves
+        self.num_input_channels = self.LED_CHANNELS + self.NUM_CLUSTERS
+        self.clamp_max = clamp_max
+        self.num_channels = 60
+        self.l1_num_channels = 60
+        kernel_size = 101
+        mid_kernel_size = 11
+        self.conv1 = nn.Sequential(
+            nn.Conv1d(
+                self.num_input_channels,
+                self.l1_num_channels,
+                kernel_size=kernel_size,
+                stride=2,
+                padding=kernel_size // 2,
+                bias=True,
+            ),
+            nn.Conv1d(
+                self.l1_num_channels,
+                self.l1_num_channels,
+                kernel_size=kernel_size,
+                stride=1,
+                padding=kernel_size // 2,
+                bias=True,
+            ),
+            nn.Conv1d(
+                self.l1_num_channels,
+                self.l1_num_channels,
+                kernel_size=kernel_size,
+                stride=1,
+                padding=kernel_size // 2,
+                bias=True,
+            ),
+        )
+        self.bn1 = nn.BatchNorm1d(self.l1_num_channels)
+        self.layer1 = nn.Sequential(
+            retinapy.nn.Residual1dBlock(
+                self.l1_num_channels,
+                self.num_channels,
+                self.num_channels,
+                kernel_size=mid_kernel_size,
+                downsample=False,
+            ),
+            *[
+                retinapy.nn.Residual1dBlock(
+                    *(self.num_channels,) * 3,
+                    kernel_size=mid_kernel_size,
+                    downsample=True,
+                )
+                for n in range(num_halves - 1)
+            ],
+        )
+        linear_in_len = 1 + (in_len - 1) // 2**num_halves
+        self.linear = nn.Linear(
+            in_features=self.num_channels * linear_in_len,
+            out_features=self.out_len,
+        )
+        # self.act_fn = torch.sigmoid
+        self.act_fn = torch.nn.Softplus()
+
+    def forward(self, x):
+        # L
+        x = F.relu(self.bn1(self.conv1(x)))
+        # L//2
+        x = self.layer1(x)
+        # L//2**num_halves
+        x = self.linear(torch.flatten(x, start_dim=1))
+        x = self.act_fn(x)
+        # max=None means no clap is applied (same for min).
+        x = torch.clamp(x, min=None, max=self.clamp_max)
+        return x
+
+
+class DistanceFieldCnnModelOld(nn.Module):
+    LED_CHANNELS = 4
+    NUM_CLUSTERS = 1
+
+    def __init__(self, clamp_max):
+        super(DistanceFieldCnnModelOld, self).__init__()
         self.num_input_channels = self.LED_CHANNELS + self.NUM_CLUSTERS
         self.num_channels = 60
         self.clamp_max = clamp_max
@@ -214,6 +294,40 @@ class DistanceFieldCnnModel(nn.Module):
         x = self.act_fn(x)
         # max=None means no clap is applied (same for min).
         x = torch.clamp(x, min=None, max=self.clamp_max)
+        return x
+
+
+class DistFieldToSpikeModel(nn.Module):
+    def __init__(self, in_len):
+        super(DistFieldToSpikeModel, self).__init__()
+        self.act = nn.Softplus()
+        k = 5
+        c = 20
+        n = 3
+        self.layer1 = nn.Sequential(
+            retinapy.nn.Residual1dBlock(
+                1, c, c, kernel_size=k, downsample=True
+            ),
+            *[
+                retinapy.nn.Residual1dBlock(
+                    c,
+                    c,
+                    c,
+                    kernel_size=k,
+                    downsample=True,
+                )
+                for _ in range(n - 1)
+            ],
+        )
+        linear_in_len = (in_len // 2**n) * c
+        self.linear = nn.Linear(in_features=linear_in_len, out_features=1)
+
+    def forward(self, x):
+        x = x.unsqueeze(dim=1)
+        x = self.layer1(x)
+        x = self.linear(torch.flatten(x, start_dim=1))
+        x = self.act(x)
+        x = torch.squeeze(x, dim=1)
         return x
 
 
