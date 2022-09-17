@@ -47,9 +47,15 @@ class DistLoss(nn.Module):
         self.beta = beta
 
     def forward(self, prediction, target):
-        error = F.l1_loss(prediction, target)
-        scaling = self.alpha + 1 / (self.beta + target)
-        loss = torch.mean(error * scaling)
+        # In some sense, the target is never 0. A best estimate is that it's
+        # closer to this time value than the previous or next. In expectation,
+        # the distance will be 0.25 away from this time point, with a 
+        # uniform prior.
+        # TODO: move to actual data generation area?
+        #error = F.l1_loss(prediction, target)
+        #scaling = self.alpha + 1 / (self.beta + target)
+        #loss = torch.mean(error * scaling)
+        loss = F.mse_loss(prediction, target)
         return loss
 
 

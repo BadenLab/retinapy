@@ -107,7 +107,7 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
     # TODO: make configurable
     NOISE_SD = 0.55
     NOISE_JITTER = 4
-    DROP_RATE = 0.10
+    DROP_RATE = 0.1
 
     def __init__(
         self,
@@ -162,7 +162,6 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
             snippet[self.num_stim_channels :] - self.spike_mean
         ) / self.spike_sd
         return snippet
-
     def _augment_spikes(self, spikes):
         """
         "Augment the spike portion of a sample.
@@ -212,8 +211,6 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
         dist = sdf.distance_field(extra_long_spikes, self.dist_clamp)
         # With the distance field calculated, we can throw away the extra bit.
         dist = dist[self.mask_slice]
-        # TODO: move into norm function.
-        normed_dist = dist / self.dist_norm
         target_spikes = np.array(extra_long_spikes[self.mask_slice], copy=True)
         if not self.allow_cheating:
             extra_long_spikes[self.mask_slice] = self.MASK_VALUE
@@ -228,4 +225,4 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
             snippet = self.normalize(snippet)
             #stimulus = (stimulus - self.stim_mean) / self.stim_sd
             #spikes = (spikes - self.spike_mean) / self.spike_sd
-        return snippet, target_spikes, normed_dist
+        return snippet, target_spikes, dist

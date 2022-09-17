@@ -36,7 +36,7 @@ SNIPPET_LEN = X_LEN + MODEL_OUT_LEN
 DIST_CLAMP_NORM = 1
 # DIST_NORM = MODEL_OUT_LEN + DIST_CLAMP * 2
 DIST_CLAMP = 600
-DIST_NORM = 600
+DIST_NORM = 10 # TODO: this is now (temporarily) the point of data_to_nn_input(x) = 0.
 SPLIT_RATIO = (3, 1, 1)
 
 _logger = logging.getLogger(__name__)
@@ -529,14 +529,17 @@ class DistFieldTrainable(Trainable):
         )
         self.loss_fn = retinapy.models.DistLoss()
         self.eval_lengths = eval_lengths
+        self.threshold = 10
+        self.min_dist = 0.5
 
     def forward(self, sample):
         masked_snippet, _, dist = sample
         masked_snippet = masked_snippet.float().cuda()
-        dist = dist.float().cuda()
-        # Dist model
         model_output = self.model(masked_snippet)
-        loss = self.loss_fn(model_output, target=dist)
+        # Dist model
+        dist = dist.float().cuda()
+        y = self.distfield_to_nn_output(dist)
+        loss = self.loss_fn(model_output, target=y)
         return model_output, loss
 
     def quick_infer(self, dist, eval_len):
@@ -551,6 +554,13 @@ class DistFieldTrainable(Trainable):
         res = (dist[:, 0:eval_len] < threshold).sum(dim=1)
         return res
 
+    def distfield_to_nn_output(self, distfield):
+        return torch.log((distfield + self.min_dist)/self.threshold)
+
+    def nn_output_to_distfield(self, nn_output):
+        return torch.exp(nn_output) * self.threshold + self.min_dist
+
+
     def evaluate(self, val_dl):
         predictions = defaultdict(list)
         targets = defaultdict(list)
@@ -559,14 +569,15 @@ class DistFieldTrainable(Trainable):
             X = masked_snippet.float().cuda()
             dist = dist.float().cuda()
             model_output = self.model(X)
+            target_dist = self.distfield_to_nn_output(dist)
             batch_len = X.shape[0]
             loss_meter.update(
-                self.loss_fn(model_output, target=dist).item(),
+                self.loss_fn(model_output, target=target_dist).item(),
                 batch_len,
             )
             # Count accuracies
             # Unnormalize for accuracy.
-            model_output *= DIST_NORM
+            model_output = self.nn_output_to_distfield(model_output)
             for eval_len in self.eval_lengths:
                 pred = self.quick_infer(model_output, eval_len=eval_len).cpu()
                 y = torch.sum(target_spikes[:, 0:eval_len], dim=1)  # .float()
@@ -614,7 +625,7 @@ def create_distfield_datasets(
             allow_cheating=False,
         )
         for (r, use_augmentation) in zip(
-            train_val_test_splits, [True, True, False]
+            train_val_test_splits, [True, False, False]
         )
     ]
     return train_val_test_datasets
