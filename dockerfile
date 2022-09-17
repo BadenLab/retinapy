@@ -148,6 +148,7 @@ RUN pip install \
 		configargparse \
 		pyyaml \
 		tensorboard \
+		kaleido \
 		mypy 
 
 
