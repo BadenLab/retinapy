@@ -529,7 +529,7 @@ class DistFieldTrainable(Trainable):
         )
         self.loss_fn = retinapy.models.DistLoss()
         self.eval_lengths = eval_lengths
-        self.threshold = 10
+        self.threshold = 5
         self.min_dist = 0.5
 
     def forward(self, sample):
@@ -961,28 +961,40 @@ def train(trainable, out_dir):
 
     for epoch in range(num_epochs):
         loss_meter = retinapy._logging.Meter("loss")
+        out_mean_meter = retinapy._logging.Meter("out_mean")
+        out_sd_meter = retinapy._logging.Meter("out_sd")
         for sample in train_dl:
             optimizer.zero_grad()
-            _, total_loss = trainable.forward(sample)
+            model_out, total_loss = trainable.forward(sample)
             total_loss.backward()
             optimizer.step()
+            out_mean_meter.update(model_out.mean().item())
+            out_sd_meter.update(model_out.std().item())
             batch_size = len(sample[0])
             loss_meter.update(total_loss.item(), batch_size)
-            tb_logger.train_step(step, total_loss, batch_size)
+            metrics = [
+                retinapy._logging.Metric("loss", total_loss.item()/batch_size),
+                retinapy._logging.Metric("model_mean", torch.mean(model_out).item()),
+                retinapy._logging.Metric("model_sd", torch.std(model_out).item())
+            ]
+            tb_logger.log(step, metrics, log_group="train")
 
             if step % opt.log_interval == 0:
                 _logger.info(
                     f"epoch: {epoch}/{num_epochs} | "
                     f"step: {step}/{len(train_dl)*num_epochs} | "
-                    f"loss: {loss_meter.avg:.5f}"
+                    f"loss: {loss_meter.avg:.5f} | "
+                    f"out mean (sd) : {out_mean_meter.avg:.5f} ({out_sd_meter.avg:.5f})"
                 )
                 loss_meter.reset()
+                out_mean_meter.reset()
+                out_sd_meter.reset()
 
             if opt.steps_til_val and step % opt.steps_til_val == 0:
                 _logger.info("Running evaluation (val ds)")
                 with evaluating(model), torch.no_grad():
                     metrics = trainable.evaluate(val_dl)
-                    tb_logger.val_step(step, metrics, "val-ds")
+                    tb_logger.log(step, metrics, "val-ds")
                     retinapy._logging.print_metrics(metrics)
 
             test_ds_eval_enabled = (
@@ -997,14 +1009,14 @@ def train(trainable, out_dir):
                 _logger.info("Running evaluation (train ds)")
                 with evaluating(model), torch.no_grad():
                     metrics = trainable.evaluate(val_dl)
-                    tb_logger.val_step(step, metrics, "train-ds")
+                    tb_logger.log(step, metrics, "train-ds")
                     retinapy._logging.print_metrics(metrics)
             step += 1
         # Evaluate and save at end of epoch.
         _logger.info("Running epoch evaluation (val ds)")
         with evaluating(model), torch.no_grad():
             metrics = trainable.evaluate(val_dl)
-            tb_logger.val_step(step, metrics, "val-ds")
+            tb_logger.log(step, metrics, "val-ds")
             retinapy._logging.print_metrics(metrics)
         model_saver.save_checkpoint(epoch, metrics)
 

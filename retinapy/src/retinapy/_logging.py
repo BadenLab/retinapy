@@ -160,12 +160,7 @@ class TbLogger(object):
     def __init__(self, tensorboard_dir):
         self.writer = tb.SummaryWriter(str(tensorboard_dir))
 
-    def train_step(self, n_iter, loss, batch_size):
-        self.writer.add_scalar("loss-total/train", loss, n_iter)
-        self.writer.add_scalar("loss/train", loss/batch_size, n_iter)
-        # TODO: should add accuracy for training, to see when overfitting.
-
-    def val_step(self, n_iter, metrics, log_group):
+    def log(self, n_iter, metrics, log_group):
         for metric in metrics:
             self.writer.add_scalar(
                 f"{metric.name}/{log_group}", metric.value, n_iter
