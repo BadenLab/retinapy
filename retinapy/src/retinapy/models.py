@@ -12,7 +12,8 @@ import logging
 _logger = logging.getLogger(__name__)
 
 
-def load_model(model, checkpoint_path: Union[str, pathlib.Path]):
+def load_model(model, checkpoint_path: Union[str, pathlib.Path],
+               map_location=None):
     checkpoint_path = pathlib.Path(checkpoint_path)
     if not checkpoint_path.exists():
         raise FileNotFoundError(
@@ -22,7 +23,7 @@ def load_model(model, checkpoint_path: Union[str, pathlib.Path]):
         checkpoint_path = list(checkpoint_path.glob("*.pth"))[-1]
 
     _logger.info(f"Loading model from ({checkpoint_path}).")
-    checkpoint_state = torch.load(checkpoint_path)
+    checkpoint_state = torch.load(checkpoint_path, map_location)
     model_state = checkpoint_state["model"]
     model.load_state_dict(model_state)
 

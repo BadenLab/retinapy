@@ -119,7 +119,7 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
         dist_clamp: float,
         dist_norm: float = 1,
         enable_augmentation: bool = True,
-        enable_normalize: bool = True,
+        enable_normalize: bool = False,
         allow_cheating: bool = False,
     ):
         self.enable_augmentation = enable_augmentation

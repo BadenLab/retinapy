@@ -547,8 +547,9 @@ class DistFieldTrainable(Trainable):
         Returns:
             the number of spikes in the region.
         """
-        threshold = 15
-        return (dist[:, 0:eval_len] < threshold).sum(dim=1)
+        threshold = 18
+        res = (dist[:, 0:eval_len] < threshold).sum(dim=1)
+        return res
 
     def evaluate(self, val_dl):
         predictions = defaultdict(list)

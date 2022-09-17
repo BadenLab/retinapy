@@ -251,7 +251,11 @@ class ModelSaver:
         # Link to "last" checkpoint.
         _logger.info(f"Linking checkpoint to ({str(self.last_path)})")
         self.last_path.unlink(missing_ok=True)
-        self.last_path.symlink_to(epoch_path)
+        # Note: a tricky aspect of path_A.symlink_to(path_B) is that path_A
+        # will be assigned to point to path_A / path_B. And so, we usually
+        # will want to call path_A.symlink_to(path_B.name).
+        self.last_path.symlink_to(epoch_path.name)
+        assert self.last_path.exists()
 
     def _save_metrics_checkpoint(self, metrics: Sequence[Metric], epoch: int):
         for metric in metrics:
