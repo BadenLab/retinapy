@@ -36,7 +36,6 @@ SNIPPET_LEN = X_LEN + MODEL_OUT_LEN
 DIST_CLAMP_NORM = 1
 # DIST_NORM = MODEL_OUT_LEN + DIST_CLAMP * 2
 DIST_CLAMP = 600
-DIST_NORM = 10 # TODO: this is now (temporarily) the point of data_to_nn_input(x) = 0.
 SPLIT_RATIO = (3, 1, 1)
 
 _logger = logging.getLogger(__name__)
@@ -529,8 +528,12 @@ class DistFieldTrainable(Trainable):
         )
         self.loss_fn = retinapy.models.DistLoss()
         self.eval_lengths = eval_lengths
-        self.threshold = 5
-        self.min_dist = 0.5
+        #self.min_dist = 0.25
+        self.dist_norm = 15
+        self.dist_mean = 50
+        # Network output should ideally have mean,sd = (0, 1). Network output
+        # 20*exp([-3, 3])  = [1.0, 402], which is a pretty good range, with
+        # 20 being the mid point. Is this too low?
 
     def forward(self, sample):
         masked_snippet, _, dist = sample
@@ -555,10 +558,16 @@ class DistFieldTrainable(Trainable):
         return res
 
     def distfield_to_nn_output(self, distfield):
-        return torch.log((distfield + self.min_dist)/self.threshold)
+        return (distfield -self.dist_mean)/ self.dist_norm
 
     def nn_output_to_distfield(self, nn_output):
-        return torch.exp(nn_output) * self.threshold + self.min_dist
+        return (nn_output * self.dist_norm) + self.dist_mean
+
+    #def distfield_to_nn_output_old(self, distfield):
+    #   return torch.log((distfield + self.min_dist) / self.dist_norm)
+
+    #def nn_output_to_distfield_old(self, nn_output):
+    #   return torch.exp(nn_output) * self.dist_norm - self.min_dist
 
 
     def evaluate(self, val_dl):
@@ -620,7 +629,6 @@ def create_distfield_datasets(
             mask_end=snippet_len,
             pad=PAD_FOR_LOSS_CALC,
             dist_clamp=DIST_CLAMP,
-            dist_norm=DIST_NORM,
             enable_augmentation=use_augmentation,
             allow_cheating=False,
         )

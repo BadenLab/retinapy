@@ -117,21 +117,17 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
         mask_end: int,
         pad: int,
         dist_clamp: float,
-        dist_norm: float = 1,
         enable_augmentation: bool = True,
-        enable_normalize: bool = False,
         allow_cheating: bool = False,
     ):
         self.enable_augmentation = enable_augmentation
         self.num_stim_channels = recording.stimulus.shape[1]
         self.rng = np.random.default_rng(self.RNG_SEED)
         self.pad = pad
-        self.dist_norm = dist_norm
         self.dist_clamp = dist_clamp
         self.ds = SnippetDataset(recording, snippet_len + self.pad)
         self.mask_slice = slice(mask_begin, mask_end)
         self.allow_cheating = allow_cheating
-        self.enable_normalize = enable_normalize
         self.stim_mean = np.expand_dims(recording.stimulus.mean(axis=0), -1)
         self.stim_sd = np.expand_dims(recording.stimulus.std(axis=0), -1)
         # The stimulus mean will be dominated by the mask
@@ -154,7 +150,7 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
         res = stimulus * noise
         return res
 
-    def normalize(self, snippet):
+    def normalize_snippet(self, snippet):
         snippet[0 : self.num_stim_channels, :] = (
             snippet[0 : self.num_stim_channels, :] - self.stim_mean
         ) / self.stim_sd
@@ -162,6 +158,7 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
             snippet[self.num_stim_channels :] - self.spike_mean
         ) / self.spike_sd
         return snippet
+
     def _augment_spikes(self, spikes):
         """
         "Augment the spike portion of a sample.
@@ -221,8 +218,4 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
         snippet = np.vstack((stimulus, spikes))
         # 7. Normalize
         # TODO: what about cheating? Why now?
-        if self.enable_normalize:
-            snippet = self.normalize(snippet)
-            #stimulus = (stimulus - self.stim_mean) / self.stim_sd
-            #spikes = (spikes - self.spike_mean) / self.spike_sd
         return snippet, target_spikes, dist
