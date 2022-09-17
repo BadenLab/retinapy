@@ -165,9 +165,9 @@ class DistanceFieldCnnModel(nn.Module):
         x = self.layer1(x)
         # L//2**num_halves
         x = self.linear(torch.flatten(x, start_dim=1))
-        x = self.act_fn(x)
+        #x = self.act_fn(x)
         # max=None means no clap is applied (same for min).
-        x = torch.clamp(x, min=None, max=self.clamp_max)
+        #x = torch.clamp(x, min=None, max=self.clamp_max)
         return x
 
 
