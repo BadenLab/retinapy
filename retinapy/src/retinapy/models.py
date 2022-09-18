@@ -102,11 +102,11 @@ class DistanceFieldCnnModel(nn.Module):
         self.num_halves = num_halves
         self.num_input_channels = self.LED_CHANNELS + self.NUM_CLUSTERS
         self.clamp_max = clamp_max
-        self.l1_num_channels = 60
-        self.l2_num_channels = 60
+        self.l1_num_channels = 50
+        self.l2_num_channels = 50
         self.l3_num_channels = 150
         kernel_size = 151
-        mid_kernel_size = 15
+        mid_kernel_size = 11
         self.conv1 = nn.Sequential(
             nn.Conv1d(
                 self.num_input_channels,
@@ -142,27 +142,20 @@ class DistanceFieldCnnModel(nn.Module):
                 downsample=False,
             )
         self.layer2_elements = []
-        expansion = 3
+        expansion = 2
         for i in range(num_halves -  1):
-            self.layer2_elements.extend([
+            self.layer2_elements.append(
                     retinapy.nn.Residual1dBlock(
                         self.l2_num_channels,
                         self.l2_num_channels*expansion,
                         self.l2_num_channels,
                         kernel_size=mid_kernel_size,
                         downsample=True,
-                    ),
-                    retinapy.nn.Residual1dBlock(
-                        self.l2_num_channels,
-                        self.l2_num_channels*expansion,
-                        self.l2_num_channels,
-                        kernel_size=mid_kernel_size,
-                        downsample=False,
-                    )])
+                    ))
         self.layer2 = nn.Sequential(*self.layer2_elements)
         self.layer3 = retinapy.nn.Residual1dBlock(
                 self.l2_num_channels,
-                self.l2_num_channels,
+                self.l3_num_channels,
                 self.l3_num_channels,
                 kernel_size=mid_kernel_size,
                 downsample=False,
