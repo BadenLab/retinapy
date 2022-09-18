@@ -13,9 +13,8 @@ import retinapy._logging
 import yaml
 from typing import Union
 import numpy as np
-import itertools
 import scipy
-from collections import namedtuple, defaultdict
+from collections import defaultdict
 from contextlib import contextmanager
 
 
@@ -25,17 +24,12 @@ ARGS_FILENAME = "args.yaml"
 TENSORBOARD_DIR = "tensorboard"
 
 IN_CHANNELS = 4 + 1
-X_LEN = 1200
-MODEL_OUT_LEN = 200
-VAL_LEN = 300
-PAD_FOR_LOSS_CALC = 600  # Quite often there are lengths in the range 300.
+# Quite often there are lengths in the range 300.
 # The pad acts as the maximum, so it's a good candidate for a norm factor.
-SNIPPET_LEN = X_LEN + MODEL_OUT_LEN
 # Example: setting normalization to 400 would cause 400 time steps to be fit
 # into the [0,1] region.
-DIST_CLAMP_NORM = 1
-# DIST_NORM = MODEL_OUT_LEN + DIST_CLAMP * 2
-DIST_CLAMP = 600
+LOSS_CALC_PAD_MS = 600  
+DIST_CLAMP_MS = 600
 SPLIT_RATIO = (3, 1, 1)
 
 _logger = logging.getLogger(__name__)
@@ -65,46 +59,35 @@ def parse_args():
         help="YAML config file to override argument defaults.",
     )
 
-    p = argparse.ArgumentParser(description="Spike detection training/testing")
-    subparsers = p.add_subparsers()
-    train_parser = subparsers.add_parser("train", help="Train models.")
-    test_parser = subparsers.add_parser("test", help="Test models.")
-    train_parser.set_defaults(func=_train)
-    # test_parser.set_defaults(func=_test)
+    parser = argparse.ArgumentParser(description="Spike detection training")
     # fmt: off
 
     # Model/config arguments
     # Using -k as a filter, just like pytest.
-    # Not that there is probably a way to make the parent parser parse the
-    # shared -k option; however, this is suprisingly harder than it would seem.
-    # For now, given that there is only one such option, duplicating it seems
-    # like the best option. See the following Stack Overflow post for some
-    # discussions: https://stackoverflow.com/questions/50543820/argparse-options-for-subparsers-override-main-if-both-share-parent
-    test_parser.add_argument("-k", type=str, default=None, metavar="EXPRESSION", help="Filter configs and models to train or test.")
-    train_parser.add_argument("-k", type=str, default=None, metavar="EXPRESSION", help="Filter configs and models to train or test.")
+    parser.add_argument("-k", type=str, default=None, metavar="EXPRESSION", help="Filter configs and models to train or test.")
 
     # Optimization parameters
-    opt_group = train_parser.add_argument_group("Optimizer parameters")
+    opt_group = parser.add_argument_group("Optimizer parameters")
     opt_group.add_argument("--lr", type=float, default=1e-5, help="Learning rate.")
     opt_group.add_argument("--weight-decay", type=float, default=1e-6, help="weight decay (default: 2e-5)")
 
     # Data
-    data_group = train_parser.add_argument_group("Data parameters")
+    data_group = parser.add_argument_group("Data parameters")
     data_group.add_argument("--stimulus-pattern", type=str, default=None, metavar="FILE", help="Path to stimulus pattern file.")
     data_group.add_argument("--stimulus", type=str, default=None, metavar="FILE", help="Path to stimulus recording file.")
     data_group.add_argument("--response", type=str, default=None, metavar="FILE", help="Path to response recording file.")
     data_group.add_argument("--recording-name", type=str, default=None, help="Name of recording within the recording file.")
     data_group.add_argument("--cluster-id", type=int, default=None, help="Cluster ID to train on.")
 
-    train_parser.add_argument("--steps-til-val", type=int, default=None, help="Steps until validation.")
-    train_parser.add_argument("--log-interval", type=int, default=1000, help="How many batches to wait before logging a status update.")
-    train_parser.add_argument("--initial-checkpoint", type=str, default=None, help="Initialize model from the checkpoint at this path.")
-    #train_parser.add_argument("--resume", type=str, default=None, help="Resume full model and optimizer state from checkpoint path.")
-    train_parser.add_argument("--output", type=str, default=None, metavar="DIR", help="Path to output folder (default: current dir).")
-    train_parser.add_argument("--labels", type=str, default=None, help="List of experiment labels. Used for naming files and/or subfolders.")
-    train_parser.add_argument("--epochs", type=int, default=8, metavar="N", help="number of epochs to train (default: 300)")
-    train_parser.add_argument("--batch-size", type=int, default=128, help="batch size")
-    train_parser.add_argument("--val-with-train-ds-period", type=int, default=10, help="After how many validation runs with the validation data should validation be run with the training data.")
+    parser.add_argument("--steps-til-val", type=int, default=None, help="Steps until validation.")
+    parser.add_argument("--log-interval", type=int, default=1000, help="How many batches to wait before logging a status update.")
+    parser.add_argument("--initial-checkpoint", type=str, default=None, help="Initialize model from the checkpoint at this path.")
+    #parser.add_argument("--resume", type=str, default=None, help="Resume full model and optimizer state from checkpoint path.")
+    parser.add_argument("--output", type=str, default=None, metavar="DIR", help="Path to output folder (default: current dir).")
+    parser.add_argument("--labels", type=str, default=None, help="List of experiment labels. Used for naming files and/or subfolders.")
+    parser.add_argument("--epochs", type=int, default=8, metavar="N", help="number of epochs to train (default: 300)")
+    parser.add_argument("--batch-size", type=int, default=128, help="batch size")
+    parser.add_argument("--val-with-train-ds-period", type=int, default=10, help="After how many validation runs with the validation data should validation be run with the training data.")
     # fmt: on
 
     # First check if we have a config file to deal with.
@@ -113,14 +96,12 @@ def parse_args():
         with open(args.config, "r") as f:
             config = yaml.safe_load(f)
             # Populate the main parser's defaults.
-            p.set_defaults(**config)
+            parser.set_defaults(**config)
     # Now the main parser.
-    opt = p.parse_args(remaining)
-    # Remove the function to run, as it can't be serialized.
-    # Is there a better way of doing this?
-    func = opt.__dict__.pop("func")
+    opt = parser.parse_args(remaining)
+    # Serialize the arguments.
     opt_text = yaml.safe_dump(opt.__dict__, default_flow_style=False)
-    return opt, opt_text, func
+    return opt, opt_text
 
 
 # TODO: checkpointing like: https://github.com/rwightman/pytorch-image-models/blob/7c4682dc08e3964bc6eb2479152c5cdde465a961/timm/utils/checkpoint_saver.py#L21
@@ -504,10 +485,6 @@ class LinearNonLinearTrainable(Trainable):
             retinapy._logging.Metric("pearson_corr", pearson_corr),
         ]
         return metrics
-
-
-# TODO: the DistFieldTrainable needs to validate only the small segment
-# specified by the dataset output len. (Not the MODEL_OUT_LEN).
 
 
 class DistFieldTrainable(Trainable):
@@ -1033,14 +1010,11 @@ def train(trainable, out_dir):
 
 def main():
     retinapy._logging.setup_logging(logging.INFO)
-    # Run here for two reasons:
-    #   1. must be run after function definitions, as setting up the function
-    #      to be called (train or test) requires the functions to be defined.
-    #   2. tests are run against methods in this file, and we don't want to
-    #      run argument parsing when running tests.
-    # must be defined before being referenced.
+    # Arguments are parsed now. This is not done globally in the file scope as
+    # tests are run against methods in this file, and we don't want to run 
+    # argument parsing when running tests.
     global opt
-    opt, opt_text, func = parse_args()
+    opt, opt_text = parse_args()
 
     labels = opt.labels.split(",") if opt.labels else None
     base_dir = pathlib.Path(opt.output if opt.output else DEFAULT_OUT_BASE_DIR)
@@ -1050,7 +1024,7 @@ def main():
     # Record the arguments.
     with open(str(out_dir / ARGS_FILENAME), "w") as f:
         f.write(opt_text)
-    func(out_dir)
+    _train(out_dir)
 
 
 if __name__ == "__main__":
