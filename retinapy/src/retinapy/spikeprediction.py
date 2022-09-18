@@ -1,18 +1,14 @@
-from os import stat
 import torch
 import retinapy
 import retinapy.models
 import retinapy.nn
 import retinapy.dataset
 import retinapy.mea as mea
-import retinapy.spikedistancefield as sdf
 import argparse
 import pathlib
 import logging
 import retinapy._logging
 import yaml
-from typing import Union
-import numpy as np
 import scipy
 from collections import defaultdict
 from contextlib import contextmanager
@@ -28,7 +24,7 @@ IN_CHANNELS = 4 + 1
 # The pad acts as the maximum, so it's a good candidate for a norm factor.
 # Example: setting normalization to 400 would cause 400 time steps to be fit
 # into the [0,1] region.
-LOSS_CALC_PAD_MS = 600  
+LOSS_CALC_PAD_MS = 600
 DIST_CLAMP_MS = 600
 SPLIT_RATIO = (3, 1, 1)
 
@@ -539,7 +535,6 @@ class DistFieldTrainable(Trainable):
     def nn_output_to_distfield(self, nn_output):
         return torch.exp(nn_output) * self.dist_norm - self.min_dist
 
-
     def evaluate(self, val_dl):
         predictions = defaultdict(list)
         targets = defaultdict(list)
@@ -559,7 +554,7 @@ class DistFieldTrainable(Trainable):
             model_output = self.nn_output_to_distfield(model_output)
             for eval_len in self.eval_lengths:
                 pred = self.quick_infer(model_output, eval_len=eval_len).cpu()
-                y = torch.sum(target_spikes[:, 0:eval_len], dim=1)  # .float()
+                y = torch.sum(target_spikes[:, 0:eval_len], dim=1)
                 predictions[eval_len].append(pred)
                 targets[eval_len].append(y)
 
@@ -658,30 +653,24 @@ class DistFieldCnnTrainableGroup(TrainableGroup):
 
     @staticmethod
     def create_trainable(rec, config):
-        #num_halves = {
+        # num_halves = {
         #    1984: 4,
         #    992: 3,
         #    3174: 5,
         #    1586: 4,
-        #}
+        # }
         num_halves = {
             1984: 4,
             992: 4,
             3174: 4,
             1586: 4,
         }
-        output_lens = {
-            1984: 200,
-            992: 100,
-            3174: 400,
-            1586: 200
-            }
+        output_lens = {1984: 200, 992: 100, 3174: 400, 1586: 200}
         model_out_len = output_lens[config.input_len]
         if config.input_len not in num_halves:
             return None
         train_ds, val_ds, test_ds = create_distfield_datasets(
-            rec, config.input_len, model_out_len, 
-            config.downsample_factor
+            rec, config.input_len, model_out_len, config.downsample_factor
         )
         model = retinapy.models.DistanceFieldCnnModel(
             DIST_CLAMP,
@@ -717,90 +706,6 @@ class LinearNonLinearTrainableGroup(TrainableGroup):
         )
         label = LinearNonLinearTrainableGroup.trainable_label(config)
         return LinearNonLinearTrainable(train_ds, val_ds, test_ds, m, label)
-
-
-def checkpoint_path(model_name, config):
-    filename = f"{model_name}_{config.input_len}i_{config.output_len}o_{config.downsample_factor}d.pt"
-    # TODO
-    # return pathlib.Path(model_name} / pathlib.Path(MODEL_CHECKPOINT_DIR) / filename
-    return None
-
-
-def test_single_model(model, test_dl):
-    model.eval()
-    model.cuda()
-    spike_seq = []
-    pred_seq = []
-    with torch.no_grad():
-        for (X, y) in test_dl:
-            X = X.cuda()
-            y = y.cuda()
-            prediction = model(X)
-            spike_seq.append(torch.flatten(y))
-            pred_seq.append(torch.flatten(prediction))
-    spike_seq = torch.cat(spike_seq).cpu()
-    pred_seq = torch.cat(pred_seq).cpu()
-    return spike_seq, pred_seq
-
-
-def calc_metrics(spike_seq, pred_seq):
-    num_correct = torch.sum(spike_seq == pred_seq)
-    assert spike_seq.shape == pred_seq.shape
-    assert len(spike_seq.shape) == 1
-    num_bins = spike_seq.shape[0]
-    accuracy = num_correct / num_bins
-    pearson_corr = scipy.stats.pearsonr(pred_seq, spike_seq).statistic
-    spearman_corr = scipy.stats.spearmanr(pred_seq, spike_seq).statistic
-    return (spike_seq, pred_seq, accuracy, pearson_corr, spearman_corr)
-
-
-def test_single_config(config):
-    dataloader = None
-
-    def _create_dataloader():
-        assert dataloader == None, "This should only be called once."
-        _, _, test_dataset = create_count_datasets(
-            config.input_len,
-            config.output_len,
-            config.downsample_factor,
-            config.cluster_idx,
-        )
-        return test_dataloader(test_dataset, opt.batch_size)
-
-    res = {}
-    for model_fn in model_fns:
-        m = model_fn(config)
-        if not m:
-            _logger.warning(
-                f"Skipping. Model ({m.name}) doesn't support "
-                f"configuration({config}). "
-            )
-            continue
-        _checkpoint_path = checkpoint_path(m.name, config)
-        if not _checkpoint_path.exists():
-            _logger.warning(
-                f"Skipping. Model ({m.name}) doesn't have a checkpoint for "
-                f"configuration({config})."
-            )
-            continue
-        # Lazy load dataloader.
-        if not dataloader:
-            dataloader = _create_dataloader()
-        retinapy.models.load_model(m, _checkpoint_path)
-        spike_seq, pred_seq = test_single_model(m, dataloader)
-        metrics = calc_metrics(spike_seq, pred_seq)
-        res[m.name] = metrics
-    return res
-
-
-def test_all():
-    logging.info("Testing all configurations.")
-    logging.info(f"{len(all_configs)} configurations to test.")
-    res = {}
-    for c in all_configs:
-        c_res = test_single_config(c)
-        res[c] = c_res
-    return res
 
 
 def test_dataloader(test_ds, batch_size):
@@ -961,7 +866,9 @@ def train(trainable, out_dir):
             batch_size = len(sample[0])
             loss_meter.update(total_loss.item(), batch_size)
             metrics = [
-                retinapy._logging.Metric("loss", total_loss.item()/batch_size),
+                retinapy._logging.Metric(
+                    "loss", total_loss.item() / batch_size
+                ),
             ]
             tb_logger.log(step, metrics, log_group="train")
 
@@ -1010,7 +917,7 @@ def train(trainable, out_dir):
 def main():
     retinapy._logging.setup_logging(logging.INFO)
     # Arguments are parsed now. This is not done globally in the file scope as
-    # tests are run against methods in this file, and we don't want to run 
+    # tests are run against methods in this file, and we don't want to run
     # argument parsing when running tests.
     global opt
     opt, opt_text = parse_args()
