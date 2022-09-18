@@ -530,7 +530,6 @@ class DistFieldTrainable(Trainable):
         self.eval_lengths = eval_lengths
         self.min_dist = 0.5
         self.dist_norm = 20
-        self.offset = -0.5
         # Network output should ideally have mean,sd = (0, 1). Network output
         # 20*exp([-3, 3])  = [1.0, 402], which is a pretty good range, with
         # 20 being the mid point. Is this too low?
@@ -558,10 +557,10 @@ class DistFieldTrainable(Trainable):
         return res
 
     def distfield_to_nn_output(self, distfield):
-        return torch.log((distfield + self.min_dist) / self.dist_norm) - self.offset
+        return torch.log((distfield + self.min_dist) / self.dist_norm)
 
     def nn_output_to_distfield(self, nn_output):
-        return torch.exp(nn_output) * self.dist_norm - self.min_dist + self.offset
+        return torch.exp(nn_output) * self.dist_norm - self.min_dist
 
 
     def evaluate(self, val_dl):
