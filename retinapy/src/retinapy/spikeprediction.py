@@ -528,9 +528,9 @@ class DistFieldTrainable(Trainable):
         )
         self.loss_fn = retinapy.models.DistLoss()
         self.eval_lengths = eval_lengths
-        #self.min_dist = 0.25
-        self.dist_norm = 15
-        self.dist_mean = 50
+        self.min_dist = 0.5
+        self.dist_norm = 20
+        self.offset = -0.5
         # Network output should ideally have mean,sd = (0, 1). Network output
         # 20*exp([-3, 3])  = [1.0, 402], which is a pretty good range, with
         # 20 being the mid point. Is this too low?
@@ -553,21 +553,15 @@ class DistFieldTrainable(Trainable):
         Returns:
             the number of spikes in the region.
         """
-        threshold = 18
+        threshold = 30
         res = (dist[:, 0:eval_len] < threshold).sum(dim=1)
         return res
 
     def distfield_to_nn_output(self, distfield):
-        return (distfield -self.dist_mean)/ self.dist_norm
+        return torch.log((distfield + self.min_dist) / self.dist_norm) - self.offset
 
     def nn_output_to_distfield(self, nn_output):
-        return (nn_output * self.dist_norm) + self.dist_mean
-
-    #def distfield_to_nn_output_old(self, distfield):
-    #   return torch.log((distfield + self.min_dist) / self.dist_norm)
-
-    #def nn_output_to_distfield_old(self, nn_output):
-    #   return torch.exp(nn_output) * self.dist_norm - self.min_dist
+        return torch.exp(nn_output) * self.dist_norm - self.min_dist + self.offset
 
 
     def evaluate(self, val_dl):
@@ -688,21 +682,35 @@ class DistFieldCnnTrainableGroup(TrainableGroup):
 
     @staticmethod
     def create_trainable(rec, config):
+        #num_halves = {
+        #    1984: 4,
+        #    992: 3,
+        #    3174: 5,
+        #    1586: 4,
+        #}
         num_halves = {
             1984: 4,
-            992: 3,
-            3174: 5,
+            992: 4,
+            3174: 4,
             1586: 4,
         }
+        output_lens = {
+            1984: 200,
+            992: 100,
+            3174: 400,
+            1586: 200
+            }
+        model_out_len = output_lens[config.input_len]
         if config.input_len not in num_halves:
             return None
         train_ds, val_ds, test_ds = create_distfield_datasets(
-            rec, config.input_len, MODEL_OUT_LEN, config.downsample_factor
+            rec, config.input_len, model_out_len, 
+            config.downsample_factor
         )
         model = retinapy.models.DistanceFieldCnnModel(
             DIST_CLAMP,
-            config.input_len + MODEL_OUT_LEN,
-            MODEL_OUT_LEN,
+            config.input_len + model_out_len,
+            model_out_len,
             num_halves[config.input_len],
         )
         res = DistFieldTrainable(
@@ -711,7 +719,7 @@ class DistFieldCnnTrainableGroup(TrainableGroup):
             test_ds,
             model,
             DistFieldCnnTrainableGroup.trainable_label(config),
-            eval_lengths=[1, 2, 5, 10, 20, 50, 100, 200],
+            eval_lengths=[1, 2, 5, 10, 20, 50],
         )
         return res
 
@@ -969,34 +977,28 @@ def train(trainable, out_dir):
 
     for epoch in range(num_epochs):
         loss_meter = retinapy._logging.Meter("loss")
-        out_mean_meter = retinapy._logging.Meter("out_mean")
-        out_sd_meter = retinapy._logging.Meter("out_sd")
         for sample in train_dl:
             optimizer.zero_grad()
             model_out, total_loss = trainable.forward(sample)
             total_loss.backward()
             optimizer.step()
-            out_mean_meter.update(model_out.mean().item())
-            out_sd_meter.update(model_out.std().item())
             batch_size = len(sample[0])
             loss_meter.update(total_loss.item(), batch_size)
             metrics = [
                 retinapy._logging.Metric("loss", total_loss.item()/batch_size),
-                retinapy._logging.Metric("model_mean", torch.mean(model_out).item()),
-                retinapy._logging.Metric("model_sd", torch.std(model_out).item())
             ]
             tb_logger.log(step, metrics, log_group="train")
 
             if step % opt.log_interval == 0:
+                model_mean = torch.mean(model_out)
+                model_sd = torch.std(model_out)
                 _logger.info(
                     f"epoch: {epoch}/{num_epochs} | "
                     f"step: {step}/{len(train_dl)*num_epochs} | "
                     f"loss: {loss_meter.avg:.5f} | "
-                    f"out mean (sd) : {out_mean_meter.avg:.5f} ({out_sd_meter.avg:.5f})"
+                    f"out mean (sd) : {model_mean:.5f} ({model_sd:.5f})"
                 )
                 loss_meter.reset()
-                out_mean_meter.reset()
-                out_sd_meter.reset()
 
             if opt.steps_til_val and step % opt.steps_til_val == 0:
                 _logger.info("Running evaluation (val ds)")

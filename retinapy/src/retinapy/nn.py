@@ -32,13 +32,7 @@ class Decoder1dBlock(nn.Module):
 
 
 class Residual1dBlock(nn.Module):
-    def __init__(
-        self,
-        in_n,
-        mid_n,
-        out_n,
-        kernel_size=3,
-        downsample=False):
+    def __init__(self, in_n, mid_n, out_n, kernel_size=3, downsample=False):
         super(Residual1dBlock, self).__init__()
         self.downsample = downsample
         self.conv1 = nn.Conv1d(
@@ -60,15 +54,19 @@ class Residual1dBlock(nn.Module):
         self.bn1 = nn.BatchNorm1d(mid_n)
         self.bn2 = nn.BatchNorm1d(mid_n)
         self.bn3 = nn.BatchNorm1d(out_n)
-        if downsample:
-            self.shortcut_downsample = nn.Conv1d(
-                in_n,
-                out_n,
-                kernel_size=1,
-                stride=2,
-                padding=0,
-                dilation=1,
-                bias=False,
+        if self.downsample or in_n != out_n:
+            stride = 2 if self.downsample else 1
+            self.shortcut_downsample = nn.Sequential(
+                nn.Conv1d(
+                    in_n,
+                    out_n,
+                    kernel_size=1,
+                    stride=stride,
+                    padding=0,
+                    dilation=1,
+                    bias=False,
+                ),
+                nn.BatchNorm1d(out_n),
             )
         else:
             self.shortcut_downsample = nn.Identity()
