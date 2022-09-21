@@ -530,6 +530,7 @@ class DistFieldTrainable(Trainable):
         self.eval_lengths = eval_lengths
         self.min_dist = 0.5
         self.dist_norm = 20
+        self.output_len = 400
         # Network output should ideally have mean,sd = (0, 1). Network output
         # 20*exp([-3, 3])  = [1.0, 402], which is a pretty good range, with
         # 20 being the mid point. Is this too low?
@@ -552,7 +553,7 @@ class DistFieldTrainable(Trainable):
         Returns:
             the number of spikes in the region.
         """
-        threshold = 30
+        threshold = 0.4
         res = (dist[:, 0:eval_len] < threshold).sum(dim=1)
         return res
 
@@ -569,20 +570,16 @@ class DistFieldTrainable(Trainable):
         loss_meter = retinapy._logging.Meter("loss")
         for (masked_snippet, target_spikes, dist) in val_dl:
             X = masked_snippet.float().cuda()
+            target_spikes = target_spikes.float().cuda()
             dist = dist.float().cuda()
-            model_output = self.model(X)
-            target_dist = self.distfield_to_nn_output(dist)
+            model_output, loss = self.forward((masked_snippet, 
+                                               target_spikes, dist))
             batch_len = X.shape[0]
-            loss_meter.update(
-                self.loss_fn(model_output, target=target_dist).item(),
-                batch_len,
-            )
+            loss_meter.update(loss.item(), batch_len)
             # Count accuracies
-            # Unnormalize for accuracy.
-            model_output = self.nn_output_to_distfield(model_output)
             for eval_len in self.eval_lengths:
-                pred = self.quick_infer(model_output, eval_len=eval_len).cpu()
-                y = torch.sum(target_spikes[:, 0:eval_len], dim=1)  # .float()
+                pred = self.quick_infer(model_output, eval_len=eval_len)
+                y = torch.sum(target_spikes[:, 0:eval_len], dim=1)
                 predictions[eval_len].append(pred)
                 targets[eval_len].append(y)
 
@@ -593,7 +590,7 @@ class DistFieldTrainable(Trainable):
             p = torch.cat(predictions[eval_len])
             t = torch.cat(targets[eval_len])
             acc = (p == t).float().mean().item()
-            pearson_corr = scipy.stats.pearsonr(p, t)[0]
+            pearson_corr = scipy.stats.pearsonr(p.cpu(), t.cpu())[0]
             metrics.append(
                 retinapy._logging.Metric(f"accuracy-{eval_len}_bins", acc)
             )
@@ -718,7 +715,7 @@ class DistFieldCnnTrainableGroup(TrainableGroup):
             test_ds,
             model,
             DistFieldCnnTrainableGroup.trainable_label(config),
-            eval_lengths=[1, 2, 5, 10, 20, 50],
+            eval_lengths=[1, 2, 5, 10, 20, 50, 100],
         )
         return res
 
