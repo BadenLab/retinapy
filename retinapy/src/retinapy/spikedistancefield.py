@@ -170,7 +170,9 @@ def mle_inference_from_df(
     _len = len(dist)
     device = dist.device
 
-    memo = {}  # (a,b) -> ('energy', 'num_spikes')
+    # If a-1 and b+1 are the indicies of two spikes, what is the energy 
+    # contributed by the elements in (a,b)?
+    memo = {}  # (a,b, num_allowed) -> ('energy')
 
     zero_spike_memo = torch.zeros(_len, _len, device=device)
     for i in range(_len):
@@ -191,35 +193,40 @@ def mle_inference_from_df(
             energy = torch.sum(torch.abs(dist[i : j + 1] - d_min))
             zero_spike_memo[i, j] = energy
 
-    global global_best_energy
     global_best_energy = math.inf
 
-    def _dfs(a, b, energy_so_far) -> Tuple[float, Tuple[int, ...]]:
-        global global_best_energy
+    def _dfs(a, b, energy_so_far, num_allowed_spikes) -> Tuple[float, Tuple[int, ...]]:
+        nonlocal global_best_energy
         if a >= b:
             return 0, ()
-        if (a, b) in memo:
-            return memo[(a, b)]
+        if (a, b, num_allowed_spikes) in memo:
+            return memo[(a, b, num_allowed_spikes)]
         if energy_so_far > global_best_energy:
-            return math.inf, ()
+            pass
+        #return math.inf, ()
         no_spike_energy = zero_spike_memo[a, b]
         best_energy = no_spike_energy
         best_seq = ()
+        if not num_allowed_spikes:
+            return best_energy, best_seq
         for candidate_pos in range(a, b + 1, resolution):
-            lhs_energy, lhs_seq = _dfs(a, candidate_pos - 1, energy_so_far)
-            spike_pos_energy = min(dist[candidate_pos], max_clamp)
-            energy = energy_so_far + lhs_energy + spike_pos_energy
-            rhs_energy, rhs_seq = _dfs(candidate_pos + 1, b, energy)
-            energy += rhs_energy
-            if energy < best_energy:
-                best_energy = energy
-                best_seq = lhs_seq + (candidate_pos,) + rhs_seq
-                if best_energy < global_best_energy:
-                    global_best_energy = best_energy
-        memo[(a, b)] = (best_energy, best_seq)
+            for num_l_spikes in range(num_allowed_spikes):
+                for num_r_spikes in range(num_allowed_spikes - num_l_spikes):
+                    lhs_energy, lhs_seq = _dfs(a, candidate_pos - 1, energy_so_far, num_l_spikes)
+                    spike_pos_energy = min(dist[candidate_pos], max_clamp)
+                    energy = energy_so_far + lhs_energy + spike_pos_energy
+                    rhs_energy, rhs_seq = _dfs(candidate_pos + 1, b, energy, num_r_spikes)
+                    energy += rhs_energy
+                    if energy < best_energy:
+                        best_energy = energy
+                        best_seq = lhs_seq + (candidate_pos,) + rhs_seq
+                        if (best_energy+energy_so_far) < global_best_energy:
+                            print(f'{best_seq}-{best_energy}')
+                            global_best_energy = best_energy
+        memo[(a, b)] = (best_energy, best_seq, num_allowed_spikes)
         return best_energy, best_seq
 
-    e, seq = _dfs(0, _len - 1, energy_so_far=0)
+    e, seq = _dfs(0, _len - 1, energy_so_far=0, num_allowed_spikes=max_n)
     return e, seq
 
 

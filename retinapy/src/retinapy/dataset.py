@@ -105,7 +105,8 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
     RNG_SEED = 123
 
     # TODO: make configurable
-    NOISE_SD = 0.55
+    NOISE_SD = 0.1
+    NOISE_MU = 0
     NOISE_JITTER = 4
     DROP_RATE = 0.1
 
@@ -141,13 +142,45 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.ds)
 
+    @property
+    def recording(self):
+        return self.ds.recording
+
     def _augment_stimulus(self, stimulus):
         """
         Augment a stimulus portion of a sample.
         """
+        # Whole block scale.
         mu = 1.0
-        noise = self.rng.normal(mu, self.NOISE_SD)
-        res = stimulus * noise
+        sd = 0.15
+        scale = self.rng.normal(mu, sd, size=(1,))
+        # Whole block offset.
+        mu = 0.0
+        sigma = 0.15
+        offset_noise = self.rng.normal(mu, sigma, size=(1,))
+        # Per bin noise.
+        max_length = stimulus.shape[1]
+        center, length = self.rng.integers(low=0, high=max_length, size=(2,))
+        left = max(0, center - length // 2)
+        right = min(max_length-1, center + length // 2 + 1)
+        bin_noise = self.rng.normal(self.NOISE_MU, self.NOISE_SD, 
+                                size=(self.num_stim_channels, (right-left)))
+        stimulus = (stimulus * scale + offset_noise)
+        stimulus[:, left:right] += bin_noise
+        return stimulus
+
+    def normalize_stimulus(self, stimulus):
+        """
+        Normalize a stimulus portion of a sample.
+        """
+        res = (stimulus - self.stim_mean) / self.stim_sd
+        return res
+
+    def normalize_spikes(self, spikes):
+        """
+        Normalize a spike portion of a sample.
+        """
+        res = (spikes - self.spike_mean) / self.spike_sd
         return res
 
     def normalize_snippet(self, snippet):
@@ -204,18 +237,20 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
             extra_long_spikes[0 : self.mask_slice.start] = self._augment_spikes(
                 extra_long_spikes[0 : self.mask_slice.start]
             )
-        # 4. Calculate the distance field.
+        # 3. Calculate the distance field.
         dist = sdf.distance_field(extra_long_spikes, self.dist_clamp)
         # With the distance field calculated, we can throw away the extra bit.
         dist = dist[self.mask_slice]
         target_spikes = np.array(extra_long_spikes[self.mask_slice], copy=True)
         if not self.allow_cheating:
             extra_long_spikes[self.mask_slice] = self.MASK_VALUE
-        # 5. Remove the extra padding that was used to calculate the distance fields.
+        # 4. Remove the extra padding that was used to calculate the distance fields.
         stimulus = extra_long_stimulus[:, 0 : -self.pad]
         spikes = extra_long_spikes[0 : -self.pad]
-        # 6. Stack stimulus and spike data to make X.
-        snippet = np.vstack((stimulus, spikes))
-        # 7. Normalize
+        # 5. Normalize
+        stimulus_norm = self.normalize_stimulus(stimulus)
+        #spikes_norm = self.normalize_spikes(spikes)
         # TODO: what about cheating? Why now?
+        # 6. Stack stimulus and spike data to make X.
+        snippet = np.vstack((stimulus_norm, spikes))
         return snippet, target_spikes, dist
