@@ -202,3 +202,15 @@ def test_spike_interval(spike_interval_data):
         assert np.array_equal(known_si, si)
 
 
+def test_mle_inference_from_df(distance_field_data):
+    M, spikes, dist_fields = distance_field_data
+    for spike, dist_field in zip(spikes, dist_fields):
+        num_spikes = sdf.mle_inference_from_df(torch.Tensor(dist_field), 
+                                               lhs_spike=-M,
+                                               rhs_spike=len(spike) + M - 1,
+                                               spike_pad=1,
+                                               max_clamp=M*2,
+                                               max_num_spikes=5,
+                                               resolution=1)
+
+
