@@ -95,11 +95,10 @@ class DistanceFieldCnnModel(nn.Module):
     LED_CHANNELS = 4
     NUM_CLUSTERS = 1
 
-    def __init__(self, clamp_max, in_len, out_len, num_halves):
+    def __init__(self, clamp_max, in_len, out_len):
         super(DistanceFieldCnnModel, self).__init__()
         self.in_len = in_len
         self.out_len = out_len
-        self.num_halves = num_halves
         self.num_input_channels = self.LED_CHANNELS + self.NUM_CLUSTERS
         self.clamp_max = clamp_max
         self.l1_num_channels = 20
@@ -138,6 +137,7 @@ class DistanceFieldCnnModel(nn.Module):
             )
         self.layer2_elements = []
         expansion = 1
+        num_halves = 4 # There are 2 other downsamples other than the midlayers.
         for i in range(num_halves -  2):
             self.layer2_elements.append(
                     retinapy.nn.Residual1dBlock(

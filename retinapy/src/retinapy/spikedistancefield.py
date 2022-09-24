@@ -221,7 +221,6 @@ def mle_inference_from_df(
                         best_energy = energy
                         best_seq = lhs_seq + (candidate_pos,) + rhs_seq
                         if (best_energy+energy_so_far) < global_best_energy:
-                            print(f'{best_seq}-{best_energy}')
                             global_best_energy = best_energy
         memo[(a, b)] = (best_energy, best_seq, num_allowed_spikes)
         return best_energy, best_seq

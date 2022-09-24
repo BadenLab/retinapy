@@ -31,8 +31,8 @@ def test_trainable_factories(rec0):
            run without errors for a number of configurations.
     """
     # Setup
-    downsample_factors = [9, 89, 178]
-    input_lengths_ms = [1000, 1600]
+    downsample_factors = [89, 178]
+    input_lengths_ms = [992, 1586]
     output_lenghts_ms = [1, 50]
     configs = tuple(
         sp.Configuration(*tple)
@@ -42,11 +42,13 @@ def test_trainable_factories(rec0):
             output_lenghts_ms,
         )
     )
-    cluster5_rec0 = rec0.clusters({40})
+    cluster40_rec0 = rec0.clusters({40})
     # Test
     for config in configs:
-        t1 = sp.create_distfield_trainable(rec0, config)
-        t2 = sp.create_lnl_trainable(rec0, config)
+        t1 = sp.DistFieldCnnTrainableGroup.create_trainable(cluster40_rec0, 
+                                                            config)
+        t2 = sp.LinearNonLinearTrainableGroup.create_trainable(cluster40_rec0, 
+                                                               config)
         assert t1 is not None
         assert t2 is not None
 

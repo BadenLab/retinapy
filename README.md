@@ -19,11 +19,11 @@ windows (snippets):
 ...    "./data/ff_spike_response.pickle",
 ...    include=["Chicken_17_08_21_Phase_00"])[0]
 >>> # Extract spike windows.
->>> # I'm downsampling by 18, and this gives ~1000 timestep per second (931).
+>>> # I'm downsampling by 18, and this gives ~1000 timestep per second (992).
 >>> downsample_factor = 18
 >>> snippet_len = 80
 >>> snippet_pad = 20
->>> snippets, cluster_ids, sample_freq = mea.labeled_spike_snippets(
+>>> snippets, cluster_ids = mea.labeled_spike_snippets(
 ...    rec, snippet_len, snippet_pad, downsample_factor)
 >>> print(snippets.shape)
 (215941, 80, 4)

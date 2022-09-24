@@ -230,7 +230,6 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
         """
         # 1. Get the snippet. Make it extra long, for the distance field calc.
         extra_long_stimulus, extra_long_spikes = self.ds[idx]
-        extra_long_spikes = extra_long_spikes.astype(float)
         # 2. Optional augmentation.
         if self.enable_augmentation:
             extra_long_stimulus = self._augment_stimulus(extra_long_stimulus)

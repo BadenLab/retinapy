@@ -2,10 +2,9 @@ from collections import namedtuple
 import itertools
 import logging
 import math
+from typing import Dict, List, Tuple, Union, Sequence, Optional, Set
 import pathlib
 import pickle
-from typing import Dict, List, Tuple, Union, Sequence, Optional, Set
-
 import numpy as np
 import pandas as pd
 import scipy
@@ -34,6 +33,34 @@ stimulus_names = tuple(s.name for s in stimuli)
 
 
 class CompressedSpikeRecording:
+    """
+    Data for a single recording, with spikes and stimulus stored as events.
+
+    Storage as events means that a 10 bin long recording with a single spike
+    at bin 5 would be have spike data = [5], as opposed to
+    [0,0,0,0,1,0,0,0,0,0]. The recordings are stored in this format anyway,
+    so this class is mostly just a wrapper around some Pandas dataframes. The
+    SpikeRecording class is the decompressed version of this class.
+
+    Some benefits of this class:
+
+        - We are not sure what changes to the underlying dataframe we will be
+          making in future, so this class provides a layer of abstraction.
+        - The recording data is split into a triplet: (stimulus pattern,
+          stimulus recording, spike recording) which typically needs to be
+          moved around together. So combining them in a single place makes
+          sense.
+        - It's easy to make mistakes querying dataframes with the Pandas API.
+          The queries can be done once here.
+
+
+    Future work:
+
+        - Currently, it's assumed that the stimulus pattern is full-field.
+          Switching to a 2D stimulus might require some changes. At least we
+          will need to decide the X-Y coordinate order and (0,0) position.
+    """
+
     def __init__(
         self,
         name: str,
@@ -70,6 +97,7 @@ class CompressedSpikeRecording:
         return res
 
     def duration(self):
+        """Duration of the recording in seconds."""
         return self.num_sensor_samples / self.sensor_sample_rate
 
     def clusters(self, cluster_ids: Set[int]):
@@ -94,6 +122,32 @@ class CompressedSpikeRecording:
 
 
 class SpikeRecording:
+    """
+    Data for a recording, with a spike and stimulus value for each time bin.
+
+    The class allows indexing by time and cluster, so an object may represent
+    a part of a recording, and isn't limited to be a whole recording.
+
+    A 10 bin long recording with a single spike at bin 5 would be have spike
+    data = [0,0,0,0,1,0,0,0,0,0], as opposed to [5]. The stimulus is stored
+    similarly.
+
+    This class is mostly just a wrapper around the already decompressed data.
+    It's useful for the same reasons as the CompressedSpikeRecording class.
+
+    Future work:
+
+        - I'm slowly adding functionality to make this class more array like.
+          The idea here is that the spike data and stimulus data have a common
+          time dimension, which it is useful index and slice over, but
+          otherwise their dimensions don't match. xarray would be a suitable
+          off-the-shelf solution for this. xarray is probably best, but while
+          the required functionality of this class is still minimal, the
+          current solution seems fine, and saves having to require knowledge of
+          yet another indexing API in addition to the currently used numpy,
+          Pandas and PyTorch.
+    """
+
     def __init__(self, name, stimulus, spikes, cluster_ids, sample_rate):
         if len(stimulus) != len(spikes):
             raise ValueError(
@@ -131,11 +185,12 @@ class SpikeRecording:
     def duration(self):
         return self.stimulus.shape[0] / self.sample_rate
 
-    def __getitem__(self, key):
+    def __getitem__(self, time_key):
+        """Return a new recording with only data for the given time bin."""
         return SpikeRecording(
-            f"{self.name}-{str(key)}",
-            self.stimulus[key],
-            self.spikes[key],
+            f"{self.name}-{str(time_key)}",
+            self.stimulus[time_key],
+            self.spikes[time_key],
             self.cluster_ids,
             self.sample_rate,
         )
@@ -157,6 +212,11 @@ class SpikeRecording:
         )
 
     def extend(self, recording):
+        """Add the given recording to the end of this one.
+
+        This was added in order to create test, train and validation sets that
+        pick their data from multiple parts of the same recording.
+        """
         if self.sample_rate != recording.sample_rate:
             raise ValueError(
                 f"Sample rates do not match. Got ({self.sample_rate}) and "
@@ -476,6 +536,12 @@ def decompress_stimulus(
     # TODO: check assumption! Assuming that the stimulus does not continue
     # after the last trigger event. This makes the last trigger special in that
     # it doesn't mark the start of a new stimulus output.
+    # TODO: Marvin says that the last trigger event isn't the end of the
+    # recording, but the last stimulus event before the end of the recording.
+    # This introduces issues in that it's not clear how long this final
+    # stimulus event is. I'm keeping the functionality as it is now, as I think
+    # a better solution is to encode the recording end in the last stimulus
+    # event, which would make the existing code below work fine.
     logging.info(
         f"Starting: decompressing stimulus. Resulting shape ({total_length})."
     )
@@ -483,6 +549,7 @@ def decompress_stimulus(
     # https://stackoverflow.com/questions/60049171/fill-values-in-numpy-array-that-are-between-a-certain-value
     num_channels = stimulus_pattern.shape[1]
     res = np.empty(shape=(total_length, num_channels))
+    # Pair each trigger with the next trigger, and do this for all but the last.
     slices = np.stack((trigger_events[:-1], trigger_events[1:]), axis=1)
     for idx, s in enumerate(slices):
         res[np.arange(*s)] = stimulus_pattern[idx]
@@ -498,19 +565,49 @@ def decompress_stimulus(
     return res
 
 
+def rebin_spikes(spike_idxs: np.ndarray, downsample_factor: int) -> np.ndarray:
+    """Calculate the spike indices after downsampling.
+
+    Args:
+        spike_idxs: The spike indices before downsampling.
+
+    This method is very simple: just floor divide the indicies. It's good to
+    have a dedicated function just so we are clear what the behaviour is,
+    and to insure that we are doing it consistently.
+    """
+    res = np.floor_divide(spike_idxs, downsample_factor)
+    return res
+
+
 def decompress_spikes(
     spikes: Union[np.ndarray, np.ma.MaskedArray],
     num_sensor_samples: int,
     downsample_factor: int = 1,
 ) -> np.ndarray:
     """
-    Fills an True/False array depending on whether a spike occurred.
+    Fills an integer array counting the number of spikes that occurred.
 
-    The output has one element for each downsampled timestep.
+    If downsample_factor is 1 (no downampling), then the output array will
+    be an array of 0s and 1s, where 1 indicates that a spike occurred in that
+    time bin.
+
+    Setting downsample_factor to an integer greater than 1 will result in
+    the spikes being counted in larger bin sizes that the original sensor
+    sample period. So we are not talking about signal downsampling, Nyquist
+    rates etc., rather we are talking about histogram binning where the bin
+    size is scaled by downsample_factor. This behaviour is similar to Pandas's
+    resample().sum() pattern.
+
+    Binning behaviour
+    -----------------
+    As only integer values are accepted for downsample_factor, the binning is
+    achieved by floor division of the original spike index. Examples:
+        1. Input: [0, 0, 0, 1, 1], downsample_factor=2, output: [0, 1, 1]
+        1. Input: [0, 0, 0, 1, 1, 1], downsample_factor=2, output: [0, 1, 2]
     """
     if np.ma.isMaskedArray(spikes):
         spikes = spikes.compressed()
-    downsampled_spikes = np.floor_divide(spikes, downsample_factor)
+    downsampled_spikes = rebin_spikes(spikes, downsample_factor)
     res = np.zeros(
         shape=[
             math.ceil(num_sensor_samples / downsample_factor),
@@ -586,7 +683,8 @@ def downsample_stimulus(stimulus: np.ndarray, factor: int) -> np.ndarray:
         return stimulus
     time_axis = 0
     logging.info(
-        f"Starting: downsampling by {factor}. Initial length {stimulus.shape[time_axis]}."
+        f"Starting: downsampling by {factor}. Initial length "
+        f"{stimulus.shape[time_axis]}."
     )
     # SciPy recommends to never exceed 13 on a single decimation call.
     # See: https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.decimate.html
@@ -601,7 +699,8 @@ def downsample_stimulus(stimulus: np.ndarray, factor: int) -> np.ndarray:
         )
         logging.info(f"Finished: decimating by {sf}")
     logging.info(
-        f"Finished: downsampling. Resulting length ({stimulus.shape[time_axis]})."
+        f"Finished: downsampling. Resulting length "
+        f"({stimulus.shape[time_axis]})."
     )
     return stimulus
 
@@ -644,42 +743,28 @@ def _cluster_ids(response: pd.DataFrame, rec_name: str) -> list:
 
 
 def spike_window(
-    spikes: Union[int, np.ndarray],
-    total_len: int,
-    post_spike_len: int,
-    stimulus_sample_rate: float,
-    sensor_sample_rate: float,
-):
+    spike_idxs: Union[int, Sequence[int]], total_len: int, post_spike_len: int
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Calculate the window endpoints around a spike, in samples of the stimulus.
     """
-    if sensor_sample_rate < stimulus_sample_rate:
-        logging.warning(
-            f"The sensor sample rate ({sensor_sample_rate}) is lower "
-            f"than the stimulus sample rate ({stimulus_sample_rate})."
-        )
     if total_len < post_spike_len + 1:
         raise ValueError(
-            f"Total length must be at least 1 greater than the "
-            f"post-spike lengths + 1. Got total_len ({total_len}) "
+            f"Total snippet length must be at least 1 greater than the "
+            f"post-spike length + 1. Got total_len ({total_len}) "
             f"and post_spike_len ({post_spike_len})."
         )
-    # 1. Select the sample to represent the spike.
-    stimulus_frame_of_spike = np.floor(
-        spikes * (stimulus_sample_rate / sensor_sample_rate)
-    ).astype("int")
-    # 2. Calculate the snippet start and end.
+    spikes = np.array(spike_idxs)
+    # Calculate the snippet start and end.
     # The -1 appears as we include the spike sample in the snippet.
-    win_start = (stimulus_frame_of_spike + post_spike_len) - (total_len - 1)
-    win_end = stimulus_frame_of_spike + post_spike_len + 1
+    win_start = (spikes + post_spike_len) - (total_len - 1)
+    win_end = spikes + post_spike_len + 1
     return win_start, win_end
 
 
 def spike_snippets(
     stimulus: np.ndarray,
-    spikes: np.ndarray,
-    stimulus_sample_rate: float,
-    sensor_sample_rate: float,
+    spike_idxs: np.ndarray,
     total_len: int,
     post_spike_len: int,
 ) -> np.ndarray:
@@ -688,33 +773,34 @@ def spike_snippets(
 
     Args:
         stimulus: The decompressed stimulus.
-        spikes: The sensor samples in which the spikes were detected.
+        spikes: Spike counts, re-binned to the stimulus sample rate.
         total_len: The length of the snippet in stimulus frames.
         post_spike_len: The number of frames to pad after the spike.
-        stimulus_sample_rate: The sampling rate of the stimulus.
-        sensor_sample_rate: The sampling rate of the sensor.
     Returns:
         A Numpy array of shape (spikes.shape[0], total_len, NUM_STIMULUS_LEDS).
 
     Note 1: The total length describes the snippet length inclusive of the post
         spike padding.
-    Note 2: If the spike falls exactly on the boundary of stimulus samples,
-            then the earlier stimulus sample will be used.
+    Note 2: If a spike bin has 2 spikes, then the snippet they share will be
+        added to the output twice.
+    Note 3: If a spike happens early enough that the snippet would start before
+        the stimulus, then the snippet will be padded with zeros. This applies
+        to the end of the stimulus as well.
 
-    Example
-    =======
+    Single spike example
+    ====================
 
         frame #:  |   0   |   1   |   2   |   3   |   4   |   5   |   6   |   7   |
         ===========================================================================
-        stim:     |   0   |   1   |   1   |   0   |   0   |   1   |   0   |   0   |
+        stimulus: |   0   |   1   |   1   |   0   |   0   |   1   |   0   |   0   |
                   |   1   |   1   |   0   |   0   |   1   |   0   |   0   |   0   |
                   |   1   |   1   |   1   |   0   |   0   |   0   |   0   |   1   |
                   |   0   |   0   |   0   |   0   |   1   |   0   |   1   |   1   |
         ===========================================================================
-        resp:     |----------------------------------*----------------------------|
+        spikes:   |   0   |   0   |   0   |   0   |   1   |   0   |   0   |   0   |
 
     The slice with parameters:
-        - total length = 6
+        - total length = 5
         - post spike length = 1
 
     Would be:
@@ -723,42 +809,14 @@ def spike_snippets(
                   |   1   |   0   |   0   |   1   |   0   |
                   |   1   |   1   |   0   |   0   |   0   |
                   |   0   |   0   |   0   |   1   |   0   |
-
-
-    Frame calculation
-     ----------------
-    (I'm not 100% confident that the below sample choice is correct.)
-
-    In the following scenario:
-
-        stimulus frame:  |  0  |  1  |  2  |  3  |
-        spike:           |-----*-----------------|
-
-    The stimulus frame in which the spike falls is:
-
-        stimulus frame of spike = floor(spike_frame * ELECTRODE_FREQ /
-                                                       stimulus_sampling_rate)
-                                = 1  (in the above example)
-
-    In the following scenario all of the following spikes fall within the same
-    stimulus frame:
-
-        stimulus frame: |   0   |   1   |   2   |
-        spike time:     |-------********--------|
     """
-    if np.ma.isMaskedArray(spikes):
+    if np.ma.isMaskedArray(spike_idxs):
         raise ValueError(
             "spikes must be a standard numpy array, not a masked array."
         )
     # 1. Get the spike windows.
-    win_start, _ = spike_window(
-        spikes,
-        total_len,
-        post_spike_len,
-        stimulus_sample_rate,
-        sensor_sample_rate,
-    )
-    # 2. Pad the stimulus incase windows go out of range.
+    win_start, _ = spike_window(spike_idxs, total_len, post_spike_len)
+    # 2. Pad the stimulus in case windows go out of range.
     if np.any(win_start < 0) or np.any(
         win_start >= (stimulus.shape[0] - total_len)
     ):
@@ -777,24 +835,33 @@ def spike_snippets(
     return snippets
 
 
+def compress_spikes(spikes: np.ndarray) -> np.ndarray:
+    """Converts a 1D spike array to an index of spike array.
+
+    Example:
+        [0, 0, 1, 0, 0, 2, 3] => [2, 5, 5, 6, 6, 6]
+    """
+    nonzero_idxs = np.squeeze(np.nonzero(spikes))
+    # Alternative:
+    #   return np.repeat(np.arange(len(spikes)), spikes)
+    return np.repeat(nonzero_idxs, spikes[nonzero_idxs])
+
+
 def labeled_spike_snippets(
     rec: CompressedSpikeRecording,
     snippet_len: int,
     snippet_pad: int,
-    downsample: int,
-) -> Tuple[np.ndarray, np.ndarray, float]:
+    downsample: int = 1,
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Caluclate spike snippets for a recording, paired with the cluster ids.
 
     Args:
         snippet_len: the length of the snippet.
         snippet_pad: the number of timesteps to include after the spike.
-        downsample: the factor by which the stimulus is downsampled.
 
-    Returns: two np.ndarrays and a float as a tuple. The first element contains
-    the spike snippets, the second element contains ids of the clusters, and
-    the last element is the sampling frequency of the snippets, calculated
-    from the downsample.
+    Returns: two np.ndarrays tuple. The first element contains
+    the spike snippets and the second element contains ids of the clusters.
     """
     stimulus = decompress_stimulus(
         rec.stimulus_pattern,
@@ -802,17 +869,15 @@ def labeled_spike_snippets(
         rec.num_sensor_samples,
         downsample,
     )
-    sample_rate = rec.sensor_sample_rate / downsample
 
     # Gather the snippets and align them with a matching array of cluster ids.
     snippets = []
     cluster_ids = []
     for idx, cluster_id in enumerate(rec.cluster_ids):
+        spike_idxs = rebin_spikes(rec.spike_events[idx], downsample)
         snips = spike_snippets(
             stimulus,
-            rec.spike_events[idx],
-            sample_rate,
-            rec.sensor_sample_rate,
+            spike_idxs,
             snippet_len,
             snippet_pad,
         )
@@ -825,7 +890,7 @@ def labeled_spike_snippets(
         snippets.extend(snips)
     snippets = np.stack(snippets)
     cluster_ids = np.array(cluster_ids)
-    return snippets, cluster_ids, sample_rate
+    return snippets, cluster_ids
 
 
 def generate_fake_spikes(
@@ -981,9 +1046,8 @@ def _write_rec_snippets(
     rec_dir = pathlib.Path(data_root_dir) / str(rec_id)
     rec_dir.mkdir(parents=False, exist_ok=True)
     # Extract the stimulus snippet around the spikes.
-    snippets, cluster_ids, sample_freq = labeled_spike_snippets(
+    snippets, cluster_ids = labeled_spike_snippets(
         rec,
-        downsample,
         snippet_len,
         snippet_pad,
     )

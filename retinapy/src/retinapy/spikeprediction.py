@@ -589,8 +589,8 @@ def create_distfield_datasets(
             snippet_len=snippet_len,
             mask_begin=input_len,
             mask_end=snippet_len,
-            pad=PAD_FOR_LOSS_CALC,
-            dist_clamp=DIST_CLAMP,
+            pad=LOSS_CALC_PAD_MS,
+            dist_clamp=DIST_CLAMP_MS,
             enable_augmentation=use_augmentation,
             allow_cheating=False,
         )
@@ -650,30 +650,15 @@ class DistFieldCnnTrainableGroup(TrainableGroup):
 
     @staticmethod
     def create_trainable(rec, config):
-        # num_halves = {
-        #    1984: 4,
-        #    992: 3,
-        #    3174: 5,
-        #    1586: 4,
-        # }
-        num_halves = {
-            1984: 4,
-            992: 4,
-            3174: 4,
-            1586: 4,
-        }
         output_lens = {1984: 200, 992: 100, 3174: 400, 1586: 200}
         model_out_len = output_lens[config.input_len]
-        if config.input_len not in num_halves:
-            return None
         train_ds, val_ds, test_ds = create_distfield_datasets(
             rec, config.input_len, model_out_len, config.downsample_factor
         )
         model = retinapy.models.DistanceFieldCnnModel(
-            DIST_CLAMP,
+            DIST_CLAMP_MS,
             config.input_len + model_out_len,
             model_out_len,
-            num_halves[config.input_len],
         )
         res = DistFieldTrainable(
             train_ds,
