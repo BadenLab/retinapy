@@ -149,6 +149,7 @@ RUN pip install \
 		pyyaml \
 		tensorboard \
 		kaleido \
+		torchinfo \
 		mypy 
 
 

@@ -142,6 +142,10 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.ds)
 
+    @property
+    def recording(self):
+        return self.ds.recording
+
     def _augment_stimulus(self, stimulus):
         """
         Augment a stimulus portion of a sample.
