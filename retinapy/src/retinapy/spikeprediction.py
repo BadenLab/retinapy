@@ -1,17 +1,19 @@
-import torch
+import argparse
+from collections import defaultdict
+import logging
+import pathlib
+
+import yaml
+
 import retinapy
-import retinapy.models
-import retinapy.nn
+import retinapy._logging
 import retinapy.dataset
 import retinapy.mea as mea
-import argparse
-import pathlib
-import logging
-import retinapy._logging
-import yaml
+import retinapy.models
+import retinapy.train
+import retinapy.nn
 import scipy
-from collections import defaultdict
-from contextlib import contextmanager
+import torch
 
 
 DEFAULT_OUT_BASE_DIR = "./out/"
@@ -75,15 +77,15 @@ def parse_args():
     data_group.add_argument("--recording-name", type=str, default=None, help="Name of recording within the recording file.")
     data_group.add_argument("--cluster-id", type=int, default=None, help="Cluster ID to train on.")
 
-    parser.add_argument("--steps-til-val", type=int, default=None, help="Steps until validation.")
-    parser.add_argument("--log-interval", type=int, default=1000, help="How many batches to wait before logging a status update.")
+    parser.add_argument("--steps-til-eval", type=int, default=None, help="Steps until validation.")
+    parser.add_argument("--steps-til-log", type=int, default=1000, help="How many batches to wait before logging a status update.")
+    parser.add_argument("--steps-til-eval-test-ds", type=int, default=10, help="After how many validation runs with the validation data should validation be run with the training data.")
     parser.add_argument("--initial-checkpoint", type=str, default=None, help="Initialize model from the checkpoint at this path.")
     #parser.add_argument("--resume", type=str, default=None, help="Resume full model and optimizer state from checkpoint path.")
     parser.add_argument("--output", type=str, default=None, metavar="DIR", help="Path to output folder (default: current dir).")
     parser.add_argument("--labels", type=str, default=None, help="List of experiment labels. Used for naming files and/or subfolders.")
     parser.add_argument("--epochs", type=int, default=8, metavar="N", help="number of epochs to train (default: 300)")
     parser.add_argument("--batch-size", type=int, default=128, help="batch size")
-    parser.add_argument("--val-with-train-ds-period", type=int, default=10, help="After how many validation runs with the validation data should validation be run with the training data.")
     # fmt: on
 
     # First check if we have a config file to deal with.
@@ -98,9 +100,6 @@ def parse_args():
     # Serialize the arguments.
     opt_text = yaml.safe_dump(opt.__dict__, default_flow_style=False)
     return opt, opt_text
-
-
-# TODO: checkpointing like: https://github.com/rwightman/pytorch-image-models/blob/7c4682dc08e3964bc6eb2479152c5cdde465a961/timm/utils/checkpoint_saver.py#L21
 
 
 class Configuration:
@@ -335,111 +334,7 @@ def get_configurations():
     return res
 
 
-class Trainable:
-    """Encapsulates a dataset, model input-output and loss function.
-
-    This class is needed in order to be able to train multiple models and
-    configurations with the same training function. The training function
-    is too general to know about how to route the data into and out of a model,
-    evaluate the model or how to take a model output and create a prediction.
-
-    Redesign from function parameters to a class
-    --------------------------------------------
-    The class began as a dumb grouping of the parameters to the train function:
-    train_ds, val_ds, test_ds, model, loss_fn, forward_fn, val_fn, and more—there
-    were so many parameters that they were grouped together into a NamedTuple.
-    However, functions like forward_fn and val_fn would need to be given
-    the model, loss_fn and forward_fn in order to operate. This is the exact
-    encapsulation behaviour that classes achieve, so the NamedTuple was made
-    into a class. Leaning into the use of classes, forward_fn and val_fn were
-    made into methods of the class, while the rest became properties. This
-    change is noteworthy as customizing the forward or validation functions
-    now requires defining a new class, rather than simply passing in a new
-    function. Although, nothing is stopping someone from defining a class that
-    simply wraps a function and passes the arguments through.
-
-    Flexibility to vary the data format
-    -----------------------------------
-    Why things belongs inside or outside this class can be understood by
-    realizing that the nature of the datasets are encapsulated here. As such,
-    any function that needs to extract the individual parts of a dataset
-    sample will need to know what is in each sample. Such a function is a
-    good candidate to appear in this class.
-
-    While in some cases you can separate the datasets from the models, this
-    isn't always easy or a good idea. A model for ImageNet can easily be
-    separated from the dataset, as the inputs and outputs are so standard; but
-    for the spike prediction, the model output is quite variable. Consider
-    the distance-field model which outputs a distance field, whereas a
-    Poisson-distribution model will output a single number. Training is
-    done with these outputs, and involves the dataset producing sample tuples
-    that have appropriate elements (distance fields, for example).
-    The actual inference is an additional calculation using these outputs.
-
-    So, the procedure of taking the model input and model output from a dataset
-    sample and feeding it to the model calculating the loss and doing the
-    inference—none of these steps can be abstracted to be ignorant of either
-    the model or the dataset.
-
-    Other libraries
-    ---------------
-    Compared to Keras and FastAI: Trainable encapsulates a lot less than
-    Keras's Model or FastAI's Learner.
-
-    At this point (2022-09-12) I'm not eager to use the FastAI API, as I don't
-    want to discover later that it's too limiting in some certain way. It's
-    quite possible that it's already too prescriptive. Reading the docs, it's
-    not clear what parts of Learner's internals are exposed for customization.
-    If all "_" prefixed methods are not meant to be customized, then it's
-    already too restrictive. Notably, there seems to be an expected format for
-    the elements of the dataset, which I want to avoid. The reason for this is
-    that the distance fields are intermediate results, and while I want to
-    train on them, I would like to evaluate based on approximations to
-    actual spike count accuracy, and I would like to make predictions using
-    much more expensive dynamic programming inference routines. So the data
-    doesn't fall nicely into (X,y) type data, and the metrics are not
-    consistent across training and evaluation.
-
-    In addition, at least at the momemt, FastAI's library provides a lot more
-    abstraction/generalization than I need, which can make it harder for
-    myself (or others) to understand what is going on. This might end up being
-    a mistake, as the growing code might reveal itself to provide nice
-    abstraction boundaries that are already handled nicely in FastAI.
-    """
-
-    def __init__(self, train_ds, val_ds, test_ds, model, model_label):
-        self.train_ds = train_ds
-        self.val_ds = val_ds
-        self.test_ds = test_ds
-        self.model = model
-        self.model_label = model_label
-
-    def forward(self, sample):
-        """Run the model forward.
-
-        Args:
-            sample: a single draw from the train or validation data loader.
-
-        Returns:
-            (output, loss): the model output and the loss, as a tuple.
-        """
-        raise NotImplementedError("Override")
-
-    def evaluate(self, val_dl):
-        """Run the full evaluation procedure.
-
-        Args:
-            val_dl: the validation data loader.
-
-        Returns:
-            metrics: a str:float dictionary containing evaluation metrics. It
-                is expected that this dictionary at least contains 'loss' and
-                'accuracy' metrics.
-        """
-        raise NotImplementedError("Override")
-
-
-class LinearNonLinearTrainable(Trainable):
+class LinearNonLinearTrainable(retinapy.train.Trainable):
     def __init__(self, train_ds, val_ds, test_ds, model, model_label):
         super(LinearNonLinearTrainable, self).__init__(
             train_ds, val_ds, test_ds, model, model_label
@@ -483,7 +378,7 @@ class LinearNonLinearTrainable(Trainable):
         return metrics
 
 
-class DistFieldTrainable(Trainable):
+class DistFieldTrainable(retinapy.train.Trainable):
     def __init__(
         self, train_ds, val_ds, test_ds, model, model_label, eval_lengths
     ):
@@ -544,8 +439,9 @@ class DistFieldTrainable(Trainable):
             X = masked_snippet.float().cuda()
             target_spikes = target_spikes.float().cuda()
             dist = dist.float().cuda()
-            model_output, loss = self.forward((masked_snippet, 
-                                               target_spikes, dist))
+            model_output, loss = self.forward(
+                (masked_snippet, target_spikes, dist)
+            )
             batch_len = X.shape[0]
             loss_meter.update(loss.item(), batch_len)
             # Count accuracies
@@ -690,38 +586,6 @@ class LinearNonLinearTrainableGroup(TrainableGroup):
         return LinearNonLinearTrainable(train_ds, val_ds, test_ds, m, label)
 
 
-def test_dataloader(test_ds, batch_size):
-    test_dl = torch.utils.data.DataLoader(
-        test_ds,
-        batch_size=batch_size,
-        shuffle=False,
-        drop_last=False,
-        num_workers=20,
-    )
-    return test_dl
-
-
-def create_dataloaders(train_ds, val_ds, test_ds):
-    train_dl = torch.utils.data.DataLoader(
-        train_ds,
-        batch_size=opt.batch_size,
-        shuffle=True,
-        drop_last=True,
-        num_workers=20,
-    )
-    val_dl = torch.utils.data.DataLoader(
-        val_ds,
-        batch_size=opt.batch_size,
-        # For debugging, it's nice to see a variety:
-        shuffle=True,
-        drop_last=True,
-        num_workers=20,
-    )
-
-    test_dl = test_dataloader(test_ds, opt.batch_size)
-    return train_dl, val_dl, test_dl
-
-
 def _train(out_dir):
     rec = mea.single_3brain_recording(
         opt.recording_name,
@@ -783,117 +647,20 @@ def _train(out_dir):
             )
             sub_dir = out_dir / str(t_label)
             logging.info(f"Output directory: ({sub_dir})")
-            train(t, sub_dir)
+            retinapy.train.train(
+                t,
+                num_epochs=opt.epochs,
+                batch_size=opt.batch_size,
+                lr=opt.lr,
+                weight_decay=opt.weight_decay,
+                out_dir=sub_dir,
+                steps_til_log=opt.steps_til_log,
+                steps_til_eval=opt.steps_til_eval,
+                initial_checkpoint=opt.initial_checkpoint,
+            )
             logging.info(f"Finished training model")
             done_trainables.add(t_label)
     logging.info("Finished training all linear non-linear models.")
-
-
-@contextmanager
-def evaluating(model):
-    """
-    Context manager to set the model to eval mode and then back to train mode.
-
-    This is used just in case there is an caught exception that leads to
-    unexpected training state.
-    """
-    original_mode = model.training
-    model.eval()
-    try:
-        model.eval()
-        yield
-    finally:
-        # Switch back to the original training mode.
-        model.train(original_mode)
-
-
-def train(trainable, out_dir):
-    logging.info(f"Training {trainable.model_label}")
-
-    # Setup output (logging & checkpoints).
-    tensorboard_dir = out_dir / "tensorboard"
-    tb_logger = retinapy._logging.TbLogger(tensorboard_dir)
-
-    # Load the model & loss fn.
-    model = trainable.model
-    if opt.initial_checkpoint is not None:
-        retinapy.models.load_model(model, opt.initial_checkpoint)
-
-    # Load the data.
-    train_dl, val_dl, test_dl = create_dataloaders(
-        trainable.train_ds, trainable.val_ds, trainable.test_ds
-    )
-    _logger.info(
-        f"Dataset sizes: train ({len(train_dl.dataset)}), "
-        f"val ({len(val_dl.dataset)}), test ({len(test_dl.dataset)})."
-    )
-    model.train()
-    model.cuda()
-
-    optimizer = torch.optim.Adam(
-        model.parameters(), lr=opt.lr, weight_decay=opt.weight_decay
-    )
-
-    model_saver = retinapy._logging.ModelSaver(out_dir, model, optimizer)
-    num_epochs = opt.epochs
-    step = 0
-
-    for epoch in range(num_epochs):
-        loss_meter = retinapy._logging.Meter("loss")
-        for sample in train_dl:
-            optimizer.zero_grad()
-            model_out, total_loss = trainable.forward(sample)
-            total_loss.backward()
-            optimizer.step()
-            batch_size = len(sample[0])
-            loss_meter.update(total_loss.item(), batch_size)
-            metrics = [
-                retinapy._logging.Metric(
-                    "loss", total_loss.item() / batch_size
-                ),
-            ]
-            tb_logger.log(step, metrics, log_group="train")
-
-            if step % opt.log_interval == 0:
-                model_mean = torch.mean(model_out)
-                model_sd = torch.std(model_out)
-                _logger.info(
-                    f"epoch: {epoch}/{num_epochs} | "
-                    f"step: {step}/{len(train_dl)*num_epochs} | "
-                    f"loss: {loss_meter.avg:.5f} | "
-                    f"out mean (sd) : {model_mean:.5f} ({model_sd:.5f})"
-                )
-                loss_meter.reset()
-
-            if opt.steps_til_val and step % opt.steps_til_val == 0:
-                _logger.info("Running evaluation (val ds)")
-                with evaluating(model), torch.no_grad():
-                    metrics = trainable.evaluate(val_dl)
-                    tb_logger.log(step, metrics, "val-ds")
-                    retinapy._logging.print_metrics(metrics)
-
-            test_ds_eval_enabled = (
-                opt.steps_til_val and opt.val_with_train_ds_period
-            )
-            if (
-                test_ds_eval_enabled
-                and (step + 1)
-                % (opt.steps_til_val * opt.val_with_train_ds_period)
-                == 0
-            ):
-                _logger.info("Running evaluation (train ds)")
-                with evaluating(model), torch.no_grad():
-                    metrics = trainable.evaluate(val_dl)
-                    tb_logger.log(step, metrics, "train-ds")
-                    retinapy._logging.print_metrics(metrics)
-            step += 1
-        # Evaluate and save at end of epoch.
-        _logger.info("Running epoch evaluation (val ds)")
-        with evaluating(model), torch.no_grad():
-            metrics = trainable.evaluate(val_dl)
-            tb_logger.log(step, metrics, "val-ds")
-            retinapy._logging.print_metrics(metrics)
-        model_saver.save_checkpoint(epoch, metrics)
 
 
 def main():
