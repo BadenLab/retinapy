@@ -13,11 +13,17 @@ class Decoder1dBlock(nn.Module):
         super(Decoder1dBlock, self).__init__()
         self.act = act
         self.conv1 = nn.Conv1d(
-            in_channels, out_channels, kernel_size=3, stride=1, padding=1
+            in_channels, out_channels, kernel_size=3, stride=1, padding=1,
+            # No need for bias here, since we're using batch norm.
+            # https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html
+            bias=False,
         )
         self.bn1 = nn.BatchNorm1d(out_channels)
         self.conv2 = nn.Conv1d(
-            out_channels, out_channels, kernel_size=3, stride=1, padding=1
+            out_channels, out_channels, kernel_size=3, stride=1, padding=1,
+            # No need for bias here, since we're using batch norm.
+            # https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html
+            bias=False,
         )
         self.bn2 = nn.BatchNorm1d(out_channels)
 
@@ -36,7 +42,10 @@ class Residual1dBlock(nn.Module):
         super(Residual1dBlock, self).__init__()
         self.downsample = downsample
         self.conv1 = nn.Conv1d(
-            in_n, mid_n, kernel_size=1, stride=1, padding=0, dilation=1
+            in_n, mid_n, kernel_size=1, stride=1, padding=0, dilation=1,
+            # No need for bias here, since we're using batch norm.
+            # https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html
+            bias=False,
         )
         stride = 2 if self.downsample else 1
         padding = kernel_size // 2
@@ -47,9 +56,15 @@ class Residual1dBlock(nn.Module):
             stride=stride,
             padding=padding,
             dilation=1,
+            # No need for bias here, since we're using batch norm.
+            # https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html
+            bias=False,
         )
         self.conv3 = nn.Conv1d(
-            mid_n, out_n, kernel_size=1, stride=1, padding=0, dilation=1
+            mid_n, out_n, kernel_size=1, stride=1, padding=0, dilation=1,
+            # No need for bias here, since we're using batch norm.
+            # https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html
+            bias=False,
         )
         self.bn1 = nn.BatchNorm1d(mid_n)
         self.bn2 = nn.BatchNorm1d(mid_n)

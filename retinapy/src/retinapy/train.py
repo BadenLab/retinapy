@@ -145,12 +145,17 @@ class Trainable:
 
 
 def _create_dataloaders(train_ds, val_ds, test_ds, batch_size):
+    # Setting pin_memory=True. This is generally recommended when training on
+    # Nvidia GPUs. See:
+    #   - https://discuss.pytorch.org/t/when-to-set-pin-memory-to-true/19723
+    #   - https://developer.nvidia.com/blog/how-optimize-data-transfers-cuda-cc/
     train_dl = torch.utils.data.DataLoader(
         train_ds,
         batch_size=batch_size,
         shuffle=True,
         drop_last=True,
         num_workers=20,
+        pin_memory=True,
     )
     val_dl = torch.utils.data.DataLoader(
         val_ds,
@@ -159,6 +164,7 @@ def _create_dataloaders(train_ds, val_ds, test_ds, batch_size):
         shuffle=True,
         drop_last=True,
         num_workers=20,
+        pin_memory=True,
     )
     test_dl = torch.utils.data.DataLoader(
         test_ds,
@@ -301,6 +307,14 @@ def train(
     """
     logging.info(f"Training {trainable.label}")
 
+    # Enable Cuda convolution auto-tuning. For more details, see:
+    #   https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html
+    torch.backends.cudnn.benchmark = True
+    
+    # Create a GradScalar. For more details, see:
+    #   https://pytorch.org/docs/stable/notes/amp_examples.html#amp-examples
+    grad_scaler = torch.cuda.amp.GradScaler()
+
     # Setup output (logging & checkpoints).
     tensorboard_dir = pathlib.Path(out_dir) / "tensorboard"
     tb_logger = retinapy._logging.TbLogger(tensorboard_dir)
@@ -328,6 +342,8 @@ def train(
         model.parameters(), lr=lr, weight_decay=weight_decay
     )
 
+    model_saver = retinapy._logging.ModelSaver(out_dir, model, optimizer)
+
     def _eval():
         nonlocal num_evals
         if num_evals == evals_til_eval_test_ds:
@@ -344,7 +360,6 @@ def train(
         num_evals += 1
         return metrics
 
-    model_saver = retinapy._logging.ModelSaver(out_dir, model, optimizer)
     timer = TrainingTimer()
     timer.start_training()
     step = 0
@@ -354,10 +369,17 @@ def train(
         loss_meter = retinapy._logging.Meter("loss")
         for batch_step, sample in enumerate(train_dl):
             timer.start_batch()
-            optimizer.zero_grad()
-            model_out, total_loss = trainable.forward(sample)
-            total_loss.backward()
-            optimizer.step()
+            # set_to_none=True is suggested to improve performance, according to:
+            #   https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html
+            # A recipe for autocast, grad scaling and set_to_none:
+            #   https://pytorch.org/tutorials/recipes/recipes/amp_recipe.html
+            optimizer.zero_grad(set_to_none=True)
+            with torch.cuda.amp.autocast():
+                model_out, total_loss = trainable.forward(sample)
+            grad_scaler.scale(total_loss).backward()
+            grad_scaler.step(optimizer)
+            grad_scaler.update()
+
             batch_size = len(sample[0])
             loss_meter.update(total_loss.item(), batch_size)
             metrics = [

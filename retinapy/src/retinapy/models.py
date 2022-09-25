@@ -123,7 +123,9 @@ class DistanceFieldCnnModel(nn.Module):
                 kernel_size=kernel_size,
                 stride=1, # was 2.
                 padding=kernel_size // 2,
-                bias=True,
+                # No need for bias here, since we're using batch norm.
+                # https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html
+                bias=False,
             ),
             nn.BatchNorm1d(self.l1_num_channels),
             nn.LeakyReLU(0.2, True),
@@ -170,10 +172,6 @@ class DistanceFieldCnnModel(nn.Module):
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
-        #x = self.layer4(x)
-        #x = torch.flatten(x, start_dim=1)
-        # L//2**num_halves
-        #x = self.linear(torch.flatten(x, start_dim=1))
         x = self.linear(torch.flatten(x, start_dim=1))
         return x
 
