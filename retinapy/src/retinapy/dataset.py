@@ -230,6 +230,12 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
         """
         # 1. Get the snippet. Make it extra long, for the distance field calc.
         extra_long_stimulus, extra_long_spikes = self.ds[idx]
+        # For some unknown reason, the following copy call makes 
+        # training about 5x faster, and it has no effect when called on the
+        # stimulus array. Maybe related to the copy that is done below for
+        # target_spikes?
+        extra_long_spikes = np.array(extra_long_spikes, copy=True)
+
         # 2. Optional augmentation.
         if self.enable_augmentation:
             extra_long_stimulus = self._augment_stimulus(extra_long_stimulus)

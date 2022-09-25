@@ -477,7 +477,7 @@ def create_distfield_datasets(
     downsample_factor: int,
 ):
     rec = mea.decompress_recording(recording, downsample=downsample_factor)
-    train_val_test_splits = mea.mirror_split(rec, split_ratio=(6, 2, 2))
+    train_val_test_splits = mea.mirror_split(rec, split_ratio=SPLIT_RATIO)
     snippet_len = input_len + output_len
     train_val_test_datasets = [
         retinapy.dataset.SpikeDistanceFieldDataset(
