@@ -78,7 +78,7 @@ def parse_args():
     data_group.add_argument("--cluster-id", type=int, default=None, help="Cluster ID to train on.")
 
     parser.add_argument("--steps-til-eval", type=int, default=None, help="Steps until validation.")
-    parser.add_argument("--steps-til-log", type=int, default=1000, help="How many batches to wait before logging a status update.")
+    parser.add_argument("--steps-til-log", type=int, default=10000, help="How many batches to wait before logging a status update.")
     parser.add_argument("--steps-til-eval-test-ds", type=int, default=10, help="After how many validation runs with the validation data should validation be run with the training data.")
     parser.add_argument("--initial-checkpoint", type=str, default=None, help="Initialize model from the checkpoint at this path.")
     #parser.add_argument("--resume", type=str, default=None, help="Resume full model and optimizer state from checkpoint path.")
