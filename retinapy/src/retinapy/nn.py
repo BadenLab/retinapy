@@ -3,6 +3,22 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 
+def create_batch_norm(n):
+    """
+    Following Davis and Frank's recommendation in "Revisiting Batch
+    Normazilation", we initialize batch norm weights to 0.1.
+
+    They also reccomended using a lower learning rate for the γ
+    parameter; however, this is not done here—but it should be tried
+    at some point!
+
+    For comparison, fastai initialize β to 0.001 and γ to 1.
+    """
+    bn = nn.BatchNorm1d(n)
+    bn.weight.data.fill_(0.1)
+    return bn
+
+
 class Decoder1dBlock(nn.Module):
     """
     I referred to decoder architecture here:
@@ -13,14 +29,22 @@ class Decoder1dBlock(nn.Module):
         super(Decoder1dBlock, self).__init__()
         self.act = act
         self.conv1 = nn.Conv1d(
-            in_channels, out_channels, kernel_size=3, stride=1, padding=1,
+            in_channels,
+            out_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
             # No need for bias here, since we're using batch norm.
             # https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html
             bias=False,
         )
         self.bn1 = nn.BatchNorm1d(out_channels)
         self.conv2 = nn.Conv1d(
-            out_channels, out_channels, kernel_size=3, stride=1, padding=1,
+            out_channels,
+            out_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
             # No need for bias here, since we're using batch norm.
             # https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html
             bias=False,
@@ -37,18 +61,30 @@ class Decoder1dBlock(nn.Module):
         return x
 
 
-class Residual1dBlock(nn.Module):
+class ResBlock1d(nn.Module):
+    """A residual block with 1d convolutions.
+
+    This is a pretty inflexible implementation. No need to make it any
+    more general yet.
+    """
+
     def __init__(self, in_n, mid_n, out_n, kernel_size=3, downsample=False):
-        super(Residual1dBlock, self).__init__()
+        super(ResBlock1d, self).__init__()
         self.downsample = downsample
+        stride = 2 if self.downsample else 1
+        self.shortcut = self.create_shortcut(in_n, out_n, stride=stride)
+        # Note: bias is False for the conv layers, as they will be followed
+        # by batch norm.
         self.conv1 = nn.Conv1d(
-            in_n, mid_n, kernel_size=1, stride=1, padding=0, dilation=1,
-            # No need for bias here, since we're using batch norm.
-            # https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html
+            in_n,
+            mid_n,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            dilation=1,
             bias=False,
         )
-        stride = 2 if self.downsample else 1
-        padding = kernel_size // 2
+        padding = (kernel_size - 1) // 2
         self.conv2 = nn.Conv1d(
             mid_n,
             mid_n,
@@ -56,39 +92,108 @@ class Residual1dBlock(nn.Module):
             stride=stride,
             padding=padding,
             dilation=1,
-            # No need for bias here, since we're using batch norm.
-            # https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html
             bias=False,
         )
         self.conv3 = nn.Conv1d(
-            mid_n, out_n, kernel_size=1, stride=1, padding=0, dilation=1,
-            # No need for bias here, since we're using batch norm.
-            # https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html
+            mid_n,
+            out_n,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            dilation=1,
             bias=False,
         )
-        self.bn1 = nn.BatchNorm1d(mid_n)
-        self.bn2 = nn.BatchNorm1d(mid_n)
-        self.bn3 = nn.BatchNorm1d(out_n)
-        if self.downsample or in_n != out_n:
-            stride = 2 if self.downsample else 1
-            self.shortcut_downsample = nn.Sequential(
-                nn.Conv1d(
-                    in_n,
-                    out_n,
-                    kernel_size=1,
-                    stride=stride,
-                    padding=0,
-                    dilation=1,
-                    bias=False,
-                ),
-                nn.BatchNorm1d(out_n),
+        self.bn1 = create_batch_norm(mid_n)
+        self.bn2 = create_batch_norm(mid_n)
+        self.bn3 = create_batch_norm(out_n)
+
+    @staticmethod
+    def create_shortcut(in_n, out_n, stride, downsample_type="pool"):
+        """
+        The identify path is one of those finicky bits of ResNet type networks.
+
+        Depending on whether the input and output match in terms of channel
+        count and dimension, we have the following behaviour:
+
+        Match?
+        ------
+
+            | Channel count | Dimensions | Bevaviour                  |
+            |---------------|------------|----------------------------|
+            |      ✓        |     ✓      | identity                   |
+            |      ✓        |     ✘      | pool or conv               |
+            |      ✘        |     ✓      | 1x1 conv                   |
+            |      ✘        |     ✘      | pool or conv and 1x1 conv  |
+
+
+        The most interesting choice is whether to use a strided pool or a
+        strided convolution to achieve the downsampling effect. It's
+        interesting as implementations are split on which one to use. There
+        are futher choices too, such as whether to use dilation in addition
+        to strides, and whether to downsample before or after the 1x1 conv.
+
+        Some implementations for reference:
+            - fastai: https://github.com/fastai/fastai/blob/aa58b1316ad8e7a5fa2e434e15e5fe6df4f4db56/nbs/01_layers.ipynb
+            - lightning: https://github.com/Lightning-AI/lightning-bolts/blob/master/pl_bolts/models/self_supervised/resnets.py
+            - pytorch image models: https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/resnet.py
+                 - there are two functions, downsample_conv() and
+                   downsample_avg() that are used to create the downsampling for
+                   the shortcut connection.
+                 - uses ceil_mode=True, so a dimension n=7 would be reduced to
+                   n=4, not n=3.
+
+        My gut instinct is that swapping out pooling for convolution to achieve
+        the downsample will naively achieve better results; however, the
+        convolution is instrinsically more powerful (actual has paratemers) and
+        so, if you care about parameter counts, then a fair comparison would
+        involve reducing parameters elsewhere. Given that the whole point of
+        the residual layer is to shortcircut a layer and allow gradients to
+        flow easily, I think that pooling gets more theory points for staying
+        true to this idea. Ironically, I think the original ResNet
+        implementation might have used convolution.
+        """
+        # downsample_types = {"pool", "conv"}
+        # Actually, let's just worry about pool for the moment.
+        downsample_types = {"pool"}
+        if downsample_type not in downsample_types:
+            raise ValueError(
+                f"Invalid downsample type ({downsample_type}). Expected one "
+                f"of ({downsample_types})."
             )
-        else:
-            self.shortcut_downsample = nn.Identity()
+        # 1. Identity
+        # In the simplest case, we can just return the input. For this to work,
+        # both the channel count and channel dimensions of the input and ouput
+        # must match. The output channel dimension is determined by the stride.
+        channels_match = in_n == out_n
+        downsample = stride > 1
+        if channels_match and not downsample:
+            return nn.Identity()
+
+        skip_layers = []
+        # 2. Downsample
+        if downsample:
+            # The following (1, 7) input:
+            # |  1  |  2  |  3  |  4  |  5  |  6  |  7  |
+            # when pooled with stride=kernel=2 becomes (1, 4):
+            # |    1.5    |    3.5    |    5.5   | 7 |
+            pool = nn.AvgPool1d(
+                kernel_size=stride,
+                stride=stride,
+                count_include_pad=False,
+                ceil_mode=True,
+            )
+            skip_layers.append(pool)
+        # 3. 1x1 conv
+        if not channels_match:
+            # There isn't a consensus on whether:
+            #   - to use batch norm or a bias or neither.
+            conv = nn.Conv1d(in_n, out_n, kernel_size=1, bias=False)
+            skip_layers.append(conv)
+        res = nn.Sequential(*skip_layers)
+        return res
 
     def forward(self, x):
-        shortcut = x
-        shortcut = self.shortcut_downsample(shortcut)
+        shortcut = self.shortcut(x)
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
         x = self.bn3(self.conv3(x))

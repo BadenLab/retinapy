@@ -123,14 +123,12 @@ class DistanceFieldCnnModel(nn.Module):
                 kernel_size=kernel_size,
                 stride=1, # was 2.
                 padding=kernel_size // 2,
-                # No need for bias here, since we're using batch norm.
-                # https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html
                 bias=False,
             ),
-            nn.BatchNorm1d(self.l1_num_channels),
+            retinapy.nn.create_batch_norm(self.l1_num_channels),
             nn.LeakyReLU(0.2, True),
         )
-        self.layer1 = retinapy.nn.Residual1dBlock(
+        self.layer1 = retinapy.nn.ResBlock1d(
                 self.l1_num_channels,
                 self.l2_num_channels,
                 self.l2_num_channels,
@@ -142,7 +140,7 @@ class DistanceFieldCnnModel(nn.Module):
         num_halves = 4 # There are 2 other downsamples other than the midlayers.
         for i in range(num_halves -  2):
             self.layer2_elements.append(
-                    retinapy.nn.Residual1dBlock(
+                    retinapy.nn.ResBlock1d(
                         self.l2_num_channels,
                         self.l2_num_channels*expansion,
                         self.l2_num_channels,
@@ -150,7 +148,7 @@ class DistanceFieldCnnModel(nn.Module):
                         downsample=True,
                     ))
         self.layer2 = nn.Sequential(*self.layer2_elements)
-        self.layer3 = retinapy.nn.Residual1dBlock(
+        self.layer3 = retinapy.nn.ResBlock1d(
                 self.l2_num_channels,
                 self.l3_num_channels,
                 self.l3_num_channels,
@@ -176,138 +174,6 @@ class DistanceFieldCnnModel(nn.Module):
         return x
 
 
-class DistanceFieldCnnModelOld(nn.Module):
-    LED_CHANNELS = 4
-    NUM_CLUSTERS = 1
-
-    def __init__(self, clamp_max):
-        super(DistanceFieldCnnModelOld, self).__init__()
-        self.num_input_channels = self.LED_CHANNELS + self.NUM_CLUSTERS
-        self.num_channels = 60
-        self.clamp_max = clamp_max
-        self.l1_num_channels = 60
-        self.conv1 = nn.Sequential(
-            nn.Conv1d(
-                self.num_input_channels,
-                self.l1_num_channels,
-                kernel_size=101,
-                stride=2,
-                padding=101 // 2,
-                bias=True,
-            ),
-            nn.Conv1d(
-                self.l1_num_channels,
-                self.l1_num_channels,
-                kernel_size=101,
-                stride=1,
-                padding=101 // 2,
-                bias=True,
-            ),
-            nn.Conv1d(
-                self.l1_num_channels,
-                self.l1_num_channels,
-                kernel_size=101,
-                stride=1,
-                padding=101 // 2,
-                bias=True,
-            ),
-        )
-        k = 11
-        self.bn1 = nn.BatchNorm1d(self.l1_num_channels)
-        self.layer1 = nn.Sequential(
-            retinapy.nn.Residual1dBlock(
-                self.l1_num_channels,
-                self.num_channels,
-                self.num_channels,
-                kernel_size=k,
-                downsample=False,
-            ),
-            retinapy.nn.Residual1dBlock(
-                *(self.num_channels,) * 3, kernel_size=k, downsample=False
-            ),
-            retinapy.nn.Residual1dBlock(
-                *(self.num_channels,) * 3, kernel_size=k, downsample=False
-            ),
-            retinapy.nn.Residual1dBlock(
-                *(self.num_channels,) * 3, kernel_size=k, downsample=False
-            ),
-            retinapy.nn.Residual1dBlock(
-                *(self.num_channels,) * 3, kernel_size=k, downsample=True
-            ),
-            retinapy.nn.Residual1dBlock(
-                *(self.num_channels,) * 3, kernel_size=k, downsample=False
-            ),
-            retinapy.nn.Residual1dBlock(
-                *(self.num_channels,) * 3, kernel_size=k, downsample=False
-            ),
-            retinapy.nn.Residual1dBlock(
-                *(self.num_channels,) * 3, kernel_size=k, downsample=False
-            ),
-        )
-        self.layer2 = nn.Sequential(
-            retinapy.nn.Residual1dBlock(
-                *(self.num_channels,) * 3, kernel_size=k, downsample=False
-            ),
-            retinapy.nn.Residual1dBlock(
-                *(self.num_channels,) * 3, kernel_size=k, downsample=True
-            ),
-        )
-        self.layer3 = nn.Sequential(
-            retinapy.nn.Residual1dBlock(
-                *(self.num_channels,) * 3, kernel_size=k, downsample=False
-            ),
-            retinapy.nn.Residual1dBlock(
-                *(self.num_channels,) * 3, kernel_size=k, downsample=True
-            ),
-        )
-        self.layer_dc1 = nn.Sequential(
-            retinapy.nn.Decoder1dBlock(self.num_channels, self.num_channels),
-            retinapy.nn.Residual1dBlock(
-                *(self.num_channels,) * 3, kernel_size=k, downsample=False
-            ),
-        )
-        self.layer_dc2 = nn.Sequential(
-            retinapy.nn.Decoder1dBlock(self.num_channels, self.num_channels),
-            retinapy.nn.Residual1dBlock(
-                *(self.num_channels,) * 3, kernel_size=k, downsample=False
-            ),
-        )
-        self.layer_dc3 = nn.Sequential(
-            retinapy.nn.Decoder1dBlock(self.num_channels, self.num_channels),
-            retinapy.nn.Residual1dBlock(
-                *(self.num_channels,) * 3, kernel_size=k, downsample=False
-            ),
-        )
-        self.linear = nn.Linear(
-            in_features=self.num_channels * 400, out_features=400
-        )
-        # self.act_fn = torch.sigmoid
-        self.act_fn = torch.nn.Softplus()
-
-    def forward(self, x):
-        # 1600
-        x = F.relu(self.bn1(self.conv1(x)))
-        # 800
-        x = self.layer1(x)
-        # 400
-
-        # Skipping for now
-        # ----------------
-        # x = self.layer2(x)
-        ## 200
-        # x = self.layer3(x)
-        ## 100
-        # x = self.layer_dc1(x)
-        ## 200
-        # x = self.layer_dc3(x)
-        ####
-
-        x = self.linear(torch.flatten(x, start_dim=1))
-        x = self.act_fn(x)
-        # max=None means no clap is applied (same for min).
-        x = torch.clamp(x, min=None, max=self.clamp_max)
-        return x
-
 
 class DistFieldToSpikeModel(nn.Module):
     def __init__(self, in_len):
@@ -317,11 +183,11 @@ class DistFieldToSpikeModel(nn.Module):
         c = 50
         n = 3
         self.layer1 = nn.Sequential(
-            retinapy.nn.Residual1dBlock(
+            retinapy.nn.ResBlock1d(
                 1, c, c, kernel_size=k, downsample=True
             ),
             *[
-                retinapy.nn.Residual1dBlock(
+                retinapy.nn.ResBlock1d(
                     c,
                     c,
                     c,
