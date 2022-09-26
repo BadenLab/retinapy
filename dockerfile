@@ -150,7 +150,7 @@ RUN pip install \
 		tensorboard \
 		kaleido \
 		torchinfo \
-		mypy 
+		mypy
 
 
 USER root
