@@ -193,95 +193,20 @@ def evaluating(model):
         model.train(original_mode)
 
 
-class TrainingTimer:
-    """A little timer to track training.
+class TrainingTimers:
+    """Collect timers here for convenience."""
 
-    All times are in seconds (fractional).
-    """
     def __init__(self):
-        self.epoch_w = 0.1
-        self.batch_w = 0.1
-        self.training_start = None
-        self.epoch_start = None
-        self.batch_start = None
-        self._rolling_epoch_duration = None
-        self._rolling_batch_duration = None
+        self.batch = retinapy._logging.Timer()
+        self.epoch = retinapy._logging.Timer()
+        self.validation = retinapy._logging.Timer()
 
-    @property
-    def rolling_epoch_duration(self) -> float:
-        if self._rolling_epoch_duration is None:
-            raise ValueError("Not yet started")
-        if self._rolling_epoch_duration is None:
-            return self.epoch_elapsed()
-        else:
-            return self._rolling_epoch_duration
-
-    @property
-    def rolling_batch_duration(self) -> float:
-        if self.batch_start is None:
-            raise ValueError("Not yet started")
-        if self._rolling_batch_duration is None:
-            return self.batch_elapsed()
-        else:
-            return self._rolling_batch_duration
-
-    def start_training(self):
-        self.training_start = time.monotonic()
-
-    def start_epoch(self):
-        next_epoch_start = time.monotonic()
-        # First call?
-        if self.epoch_start is None:
-            self.epoch_start = next_epoch_start
-            return
-        assert self.epoch_start is not None
-        epoch_elapsed = next_epoch_start - self.epoch_start
-        self.epoch_start = next_epoch_start
-        # Second call? No existing duration to average.
-        if self._rolling_epoch_duration is None:
-            self._rolling_epoch_duration = epoch_elapsed
-            return
-        assert self._rolling_epoch_duration is not None
-        self._rolling_epoch_duration = (
-                self.epoch_w * epoch_elapsed
-                + (1 - self.epoch_w) * self._rolling_epoch_duration
-        )
-
-    def start_batch(self):
-        next_batch_start = time.monotonic()
-        # First call?
-        if self.batch_start is None:
-            self.batch_start = next_batch_start
-            return
-        assert self.batch_start is not None
-        batch_elapsed = next_batch_start - self.batch_start
-        self.batch_start = next_batch_start
-        # Second call? No existing duration to average.
-        if self._rolling_batch_duration is None:
-            self._rolling_batch_duration = batch_elapsed
-            return 
-        # Third and subsequent call.
-        assert self._rolling_batch_duration is not None
-        self._rolling_batch_duration = (
-                self.batch_w * batch_elapsed
-                + (1 - self.batch_w) * self._rolling_batch_duration
-        )
-
-    def training_elapsed(self) -> float:
-        if self.training_start is None:
-            raise ValueError("Training has not started")
-        return time.monotonic() - self.training_start
-
-    def epoch_elapsed(self) -> float:
-        if self.epoch_start is None:
-            raise ValueError("Epoch has not started")
-        return time.monotonic() - self.epoch_start
-
-    def batch_elapsed(self) -> float:
-        if self.batch_start is None:
-            raise ValueError("Batch has not started")
-        return time.monotonic() - self.batch_start
-
+    @staticmethod
+    def create_and_start():
+        timer = TrainingTimers()
+        timer.batch.restart()
+        timer.epoch.restart()
+        return timer
 
 
 def train(
@@ -302,7 +227,7 @@ def train(
     This is a training loop that works with any Trainable object.
 
     It encapsulates basic functionality like logging, checkpointing and
-    choosing when to run an evalutaion. Users might be just as well off 
+    choosing when to run an evalutaion. Users might be just as well off
     by copying the code to use as a baseline and modifying it to their needs.
     """
     logging.info(f"Training {trainable.label}")
@@ -310,7 +235,7 @@ def train(
     # Enable Cuda convolution auto-tuning. For more details, see:
     #   https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html
     torch.backends.cudnn.benchmark = True
-    
+
     # Create a GradScalar. For more details, see:
     #   https://pytorch.org/docs/stable/notes/amp_examples.html#amp-examples
     grad_scaler = torch.cuda.amp.GradScaler()
@@ -353,22 +278,30 @@ def train(
             dl = val_dl
             label = "val-ds"
         _logger.info(f"Running evaluation {label}")
-        with evaluating(trainable.model), torch.no_grad():
+        with evaluating(trainable.model), torch.no_grad(), timers.validation:
             metrics = trainable.evaluate(dl)
-            tb_logger.log(step, metrics, label)
+            tb_logger.log_metrics(step, metrics, label)
             retinapy._logging.print_metrics(metrics)
+        tb_logger.log_scalar(
+            step, "eval-time", timers.validation.elapsed(), label
+        )
+        num_evals += 1
+        _logger.info(
+            f"Finished evaluation in {round(timers.validation.elapsed())} sec "
+            f"(rolling ave: {round(timers.validation.rolling_duration())} sec)"
+        )
         num_evals += 1
         return metrics
 
-    timer = TrainingTimer()
-    timer.start_training()
     step = 0
     num_evals = 0
+    timers = TrainingTimers.create_and_start()
     for epoch in range(num_epochs):
-        timer.start_epoch()
+        timers.epoch.restart()
         loss_meter = retinapy._logging.Meter("loss")
+        _eval()
         for batch_step, sample in enumerate(train_dl):
-            timer.start_batch()
+            timers.batch.restart()
             # set_to_none=True is suggested to improve performance, according to:
             #   https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html
             # A recipe for autocast, grad scaling and set_to_none:
@@ -387,20 +320,21 @@ def train(
                     "loss", total_loss.item() / batch_size
                 ),
             ]
-            tb_logger.log(step, metrics, log_group="train")
+            tb_logger.log_metrics(step, metrics, log_group="train")
 
             # Log to console.
             if step % steps_til_log == 0:
                 model_mean = torch.mean(model_out)
                 model_sd = torch.std(model_out)
                 elapsed_min, elapsed_sec = divmod(
-                        round(timer.training_elapsed()), 60)
+                    round(timers.epoch.elapsed()), 60
+                )
                 _logger.info(
                     f"epoch: {epoch}/{num_epochs} | "
                     f"step: {batch_step:>4}/{len(train_dl)} "
                     f"({batch_step/len(train_dl):>3.0%}) | "
                     f"elapsed: {elapsed_min:>2}m:{elapsed_sec:02d}s | "
-                    f"({round(1/timer.rolling_batch_duration):>2} batches/s) | "
+                    f"({round(1/timers.batch.rolling_duration()):>2} batches/s) | "
                     f"loss: {loss_meter.avg:.5f} | "
                     f"out mean (sd) : {model_mean:>4.3f} ({model_sd:>4.3f})"
                 )
@@ -415,8 +349,10 @@ def train(
         # Evaluate and save at end of epoch.
         # Print seconds using format strings
 
-        _logger.info(f"Finished epoch in {round(timer.epoch_elapsed())} secs "
-                     f"(rolling duration: "
-                     f"{round(timer.rolling_batch_duration)} s/batch)")
+        _logger.info(
+            f"Finished epoch in {round(timers.epoch.elapsed())} secs "
+            f"(rolling duration: "
+            f"{round(timers.batch.rolling_duration())} s/batch)"
+        )
         metrics = _eval()
         model_saver.save_checkpoint(epoch, metrics)

@@ -1,15 +1,17 @@
+from collections import namedtuple
+import functools
 import logging
 import logging.handlers
-import pathlib
-import torch.utils.tensorboard as tb
-import retinapy.models
-import functools
-import torch
-import sys
-from collections import namedtuple
 import math
-from typing import Sequence, Optional, Union, Dict
 from numbers import Number
+import pathlib
+import sys
+import time
+from typing import Dict, Optional, Sequence, Union
+
+import retinapy.models
+import torch
+import torch.utils.tensorboard as tb
 
 
 _logger = logging.getLogger(__name__)
@@ -98,10 +100,114 @@ class Meter:
         return res
 
 
+class Timer:
+    """A little timer to track repetitive things.
+
+    Rates/durations are monitored with exponential moving averages.
+
+    All times are in seconds (fractional).
+
+    There is two main use cases:
+
+    The timer supports the context manager protocol, so you can use it like:
+
+        timer = Timer()
+        with timer:
+            # Do something
+        print(f"Duration: {timer.elapsed()}")
+
+    The original motivation for this feature was to track how long it took to
+    run validation, while keeping a rolling average of the validation time.
+    """
+
+    def __init__(self):
+        self.w = 0.1
+        self._loop_start = None
+        self._rolling_duration = None
+        self._first_start = None
+        self._prev_elapsed = 0
+
+    @staticmethod
+    def create_and_start() -> "Timer":
+        timer = Timer()
+        timer.restart()
+        return timer
+
+    def restart(self) -> Optional[float]:
+        """Start or restart the timer.
+        
+        Returns the duration of the previous loop, or None on the first call.
+        """
+        t_now = time.monotonic()
+        # First call?
+        if self._first_start is None:
+            self._first_start = t_now
+        # Has the timer been stopped? If so, start it again.
+        if self._loop_start is None:
+            self._loop_start = t_now
+            return
+        assert self._loop_start is not None
+        # From second call, we have an elasped time.
+        self._prev_elapsed = t_now - self._loop_start
+        self._increment_rolling(self._prev_elapsed)
+        self._loop_start = t_now
+        return self._prev_elapsed
+
+    def _increment_rolling(self, elapsed):
+        if self._rolling_duration is None:
+            self._rolling_duration = elapsed
+        else:
+            assert self._rolling_duration is not None
+            self._rolling_duration = (
+                self.w * elapsed + (1 - self.w) * self._rolling_duration
+            )
+
+    def stop(self) -> Optional[float]:
+        """Stop the timer.
+
+        It's fine to stop a timer that hasn't been started.
+        """
+        if self._loop_start is None:
+            return
+        self._prev_elapsed = time.monotonic() - self._loop_start
+        self._increment_rolling(self._prev_elapsed)
+        self._loop_start = None
+        return self._prev_elapsed
+
+    def elapsed(self) -> float:
+        """
+        The current elapsed time, or previous if the timer is stopped.
+
+        If the timer has never been started, an error will be raised.
+        """
+        if self._loop_start is None:
+            if self._prev_elapsed is None:
+                raise ValueError("Not yet started.")
+            return self._prev_elapsed
+        return time.monotonic() - self._loop_start
+
+    def total_elapsed(self) -> float:
+        if self._first_start is None:
+            raise ValueError("Not yet started")
+        return time.monotonic() - self._first_start
+
+    def rolling_duration(self) -> float:
+        if self._rolling_duration is None:
+            return self.elapsed()
+        else:
+            return self._rolling_duration
+
+    def __enter__(self):
+        self.restart()
+
+    def __exit__(self, *args):
+        self.stop()
+
+
 class Metric:
     """A quantity like like loss or accuracy is tracked as a Metric.
 
-    In addition to the value itself, functions that consume metrics typically 
+    In addition to the value itself, functions that consume metrics typically
     need to know:
         - a name for the metric
         - whether a higher value is better or lower is better
@@ -109,12 +215,13 @@ class Metric:
     Class vs. tuples
     ----------------
     Tuples could be used to pass around these values. However, a Metric class
-    makes the implicit explicit, and hopefully makes things easier to both 
+    makes the implicit explicit, and hopefully makes things easier to both
     understand and use. A further benefit of a class is that there is an
-    option to make the Meter class be a metric (either duck typing or via 
+    option to make the Meter class be a metric (either duck typing or via
     sub-classing) in order to avoid the very mild annoyance of having to
     meter.avg every time you want to make a metric from a meter.
-    """ 
+    """
+
     def __init__(self, name: str, value: Number, increasing: bool = True):
         self.name = name
         self.value = value
@@ -148,11 +255,8 @@ class Metric:
 
 
 def print_metrics(metrics):
-    _logger.info(
-        " | ".join(
-            [f"{m.name}: {m.value:.5f}" for m in metrics]
-        )
-    )
+    _logger.info(" | ".join([f"{m.name}: {m.value:.5f}" for m in metrics]))
+
 
 class TbLogger(object):
     """Manages logging to TensorBoard."""
@@ -160,11 +264,14 @@ class TbLogger(object):
     def __init__(self, tensorboard_dir):
         self.writer = tb.SummaryWriter(str(tensorboard_dir))
 
-    def log(self, n_iter, metrics, log_group):
+    def log_metrics(self, n_iter, metrics, log_group):
         for metric in metrics:
             self.writer.add_scalar(
                 f"{metric.name}/{log_group}", metric.value, n_iter
             )
+
+    def log_scalar(self, n_iter, name, val, log_group):
+        self.writer.add_scalar(f"{name}/{log_group}", val, n_iter)
 
 
 class ModelSaver:
@@ -235,7 +342,8 @@ class ModelSaver:
         best_metric = self.best_metrics[metric_name]
         epoch = self.best_metric_epochs[metric_name]
         res = self.save_dir / self.BEST_CKPT_FILENAME_FORMAT.format(
-            metric_name=best_metric.name, epoch=epoch)
+            metric_name=best_metric.name, epoch=epoch
+        )
         return res
 
     def _save_epoch_checkpoint(self, epoch: int):
