@@ -6,16 +6,18 @@ from torch.nn import functional as F
 def create_batch_norm(n):
     """
     Following Davis and Frank's recommendation in "Revisiting Batch
-    Normazilation", we initialize batch norm weights to 0.1.
-
-    They also reccomended using a lower learning rate for the γ
-    parameter; however, this is not done here—but it should be tried
-    at some point!
+    Normazilation", we would initialize batch norm weights to less than 1 
+    (they suggested to use 0.1). They also reccomended using a lower learning 
+    rate for the γ parameter.
 
     For comparison, fastai initialize β to 0.001 and γ to 1.
+
+    I tried both, and found better results with fastai's defaults.
     """
     bn = nn.BatchNorm1d(n)
-    bn.weight.data.fill_(0.1)
+    #bn.weight.data.fill_(0.1)
+    bn.weight.data.fill_(0.0)
+    bn.bias.data.fill_(1e-3)
     return bn
 
 
