@@ -234,7 +234,7 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
         # training about 5x faster, and it has no effect when called on the
         # stimulus array. Maybe related to the copy that is done below for
         # target_spikes?
-        extra_long_spikes = np.array(extra_long_spikes, copy=True)
+        extra_long_spikes = np.array(extra_long_spikes, copy=True, dtype=float)
 
         # 2. Optional augmentation.
         if self.enable_augmentation:
