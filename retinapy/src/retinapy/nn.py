@@ -15,9 +15,12 @@ def create_batch_norm(n):
     I tried both, and found better results with fastai's defaults.
     """
     bn = nn.BatchNorm1d(n)
-    #bn.weight.data.fill_(0.1)
-    bn.weight.data.fill_(1.0)
-    bn.bias.data.fill_(1e-3)
+    # fastai 
+    #bn.weight.data.fill_(1.0)
+    #bn.bias.data.fill_(1e-3)
+    # Davis and Frank
+    bn.weight.data.fill_(0.1)
+    bn.bias.data.fill_(0)
     return bn
 
 
