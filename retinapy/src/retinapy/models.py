@@ -199,6 +199,9 @@ class MultiClusterModel(nn.Module):
         x = self.linear(torch.flatten(x, start_dim=1))
         return x
 
+
+
+
 class DistanceFieldCnnModel(nn.Module):
     LED_CHANNELS = 4
     NUM_CLUSTERS = 1

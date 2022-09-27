@@ -299,7 +299,6 @@ def train(
     for epoch in range(num_epochs):
         timers.epoch.restart()
         loss_meter = retinapy._logging.Meter("loss")
-        _eval()
         for batch_step, sample in enumerate(train_dl):
             timers.batch.restart()
             # set_to_none=True is suggested to improve performance, according to:
