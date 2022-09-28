@@ -8,10 +8,13 @@ import pathlib
 import sys
 import time
 from typing import Dict, Optional, Sequence, Union
+from collections import defaultdict
 
 import retinapy.models
+import pandas as pd
 import torch
 import torch.utils.tensorboard as tb
+import json
 
 
 _logger = logging.getLogger(__name__)
@@ -135,7 +138,7 @@ class Timer:
 
     def restart(self) -> Optional[float]:
         """Start or restart the timer.
-        
+
         Returns the duration of the previous loop, or None on the first call.
         """
         t_now = time.monotonic()
@@ -254,6 +257,120 @@ class Metric:
             return self.value < other_val
 
 
+class MetricTracker:
+    """Monitors metrics and the epochs they were seen in.
+
+    It's common to write a conditional like:
+
+        if new_metric.is_better(existing_best):
+            do_something()
+            existing_best = new_metric
+
+    This class does that here, so other classes like checkpointers don't have
+    to. This class originally came about by gutting the functionality from
+    the ModelCheckpointer when it was needed elsewhere.
+    """
+
+    # Class variables
+    HISTORY_FILENAME = "metrics.csv"
+    BEST_FILENAME = "best_metrics.json"
+
+    # Instance variables
+    best_metrics : Dict[str, Number]
+    best_metric_epochs = Dict[str, int]
+    _best_this_epoch = Sequence[Metric]
+    history = Dict[int, Dict[str, Number]]
+
+    def __init__(self, out_dir):
+        self.out_dir = out_dir
+        # Some recording keeping here. Could probably just use a single
+        # authorative dataframe, and have functions query it. But for now,
+        # I'll stick with this.
+        self.best_metrics = dict()
+        self.best_metric_epochs = dict()
+        self._best_this_epoch = []
+        # To allow new metrics to be added at any time, we won't use any
+        # fixed table structure. Instead, just a dicts of dicts, one entry
+        # for each epoch recorded. It's a dict of dicts rather than a list
+        # of dicts, as we don't want to enforce that the tracker be updated
+        # on every epoch. Another detail: we don't store Metric objects, but
+        # just the values. The benefit of this is an easy conversion to
+        # pandas dataframes.
+        self.history = defaultdict(dict)
+
+    def history_path(self) -> pathlib.Path:
+        return pathlib.Path(self.out_dir) / self.HISTORY_FILENAME
+
+    def best_path(self) -> pathlib.Path:
+        return pathlib.Path(self.out_dir) / self.BEST_FILENAME
+
+    def on_epoch_end(self, metrics: Sequence[Metric], epoch: int):
+        """Record this latest epoch's metrics.
+
+        The function name hints that I'm coming around to the idea that
+        having training callbacks is eventually going to happen.
+        """
+        self._best_this_epoch = []
+        for metric in metrics:
+            # Add to history
+            self.history[epoch][metric.name] = metric.value
+            if math.isnan(metric.value):
+                _logger.warn(f"Metric ({metric.name}) is NaN.")
+                continue
+            current_best = self.best_metrics.get(metric.name, None)
+            # If new or better metric encountered, hardlink to epoch checkpoint.
+            if current_best is None or metric.is_better(current_best):
+                # Log a message if a new metric is encountered.
+                if current_best is None:
+                    _logger.info(
+                        "New metric encountered "
+                        f"({metric.name} = {metric.value:.5f}) "
+                    )
+                else:
+                    assert metric.is_better(current_best)
+                    _logger.info(
+                        f"Improved metric ({metric.name}):  "
+                        f"{metric.value:.5f} (epoch {epoch}) > "
+                        f"{current_best:.5f} "
+                        f"(epoch {self.best_metric_epochs[metric.name]})"
+                    )
+                self.best_metrics[metric.name] = metric.value
+                self.best_metric_epochs[metric.name] = epoch
+                self._best_this_epoch.append(metric)
+            self._write_history()
+            self._write_best()
+            self._log_best()
+        return self._best_this_epoch
+
+    def _write_history(self):
+        """Write the metric history as a CSV file."""
+        with open(self.history_path(), "w") as f:
+            self.history_as_dataframe().to_csv(f, index_label="epoch")
+
+    def _write_best(self):
+        with open(self.best_path(), "w") as f:
+            json.dump(self.best_metrics, f, indent=2)
+
+    def _log_best(self):
+        """Log the best metrics to the console."""
+        _logger.info("Best metrics:")
+        _logger.info(json.dumps(self.best_metrics, indent=2))
+
+
+    def improved_metrics(self) -> Sequence[Metric]:
+        """
+        Returns a list of metrics that have improved since the last update.
+        """
+        return self._best_this_epoch
+
+    def history_as_dataframe(self):
+        """Return the history of metrics as a pandas dataframe.
+
+        The epoch number becomes the index.
+        """
+        return pd.DataFrame.from_dict(self.history, orient="index")
+
+
 def print_metrics(metrics):
     _logger.info(" | ".join([f"{m.name}: {m.value:.5f}" for m in metrics]))
 
@@ -299,9 +416,7 @@ class ModelSaver:
 
     CKPT_FILENAME_FORMAT = "checkpoint_epoch-{epoch}.pth"
     LAST_CKPT_FILENAME = "checkpoint_last.pth"
-    BEST_CKPT_FILENAME_FORMAT = (
-        "checkpoint_best_{metric_name}_epoch-{epoch}.pth"
-    )
+    BEST_CKPT_FILENAME_FORMAT = "checkpoint_best_{metric_name}.pth"
 
     def __init__(
         self,
@@ -318,16 +433,7 @@ class ModelSaver:
         self.model = model
         self.optimizer = optimizer
         self.checkpoints_by_epoch = dict()
-        self.best_metrics = dict()
-        self.best_metric_epochs = dict()
-        self.best_epoch = None
         self.max_history = max_history
-
-    @property
-    def best_path(self):
-        return self.save_dir / self.BEST_CKPT_FILENAME_FORMAT.format(
-            epoch=self.best_epoch
-        )
 
     @property
     def last_path(self):
@@ -339,10 +445,8 @@ class ModelSaver:
         return res
 
     def metric_path(self, metric_name: str):
-        best_metric = self.best_metrics[metric_name]
-        epoch = self.best_metric_epochs[metric_name]
         res = self.save_dir / self.BEST_CKPT_FILENAME_FORMAT.format(
-            metric_name=best_metric.name, epoch=epoch
+            metric_name=metric_name
         )
         return res
 
@@ -352,7 +456,7 @@ class ModelSaver:
         retinapy.models.save_model(self.model, epoch_path, self.optimizer)
         self.checkpoints_by_epoch[epoch] = epoch_path
         # Link to "last" checkpoint.
-        _logger.info(f"Linking checkpoint to ({str(self.last_path)})")
+        _logger.info(f"Updating symlink ({str(self.last_path)})")
         self.last_path.unlink(missing_ok=True)
         # Note: a tricky aspect of path_A.symlink_to(path_B) is that path_A
         # will be assigned to point to path_A / path_B. And so, we usually
@@ -360,45 +464,24 @@ class ModelSaver:
         self.last_path.symlink_to(epoch_path.name)
         assert self.last_path.exists()
 
-    def _save_metrics_checkpoint(self, metrics: Sequence[Metric], epoch: int):
-        for metric in metrics:
-            if math.isnan(metric.value):
-                _logger.warn(
-                    f"Metric ({metric.name}) is NaN. Ignored for checkpointing."
-                )
-                continue
-            current_best = self.best_metrics.get(metric.name, None)
-            # If new or better metric encountered, hardlink to epoch checkpoint.
-            if current_best is None or metric.is_better(current_best):
-                # Log a message if a new metric is encountered.
-                if current_best is None:
-                    _logger.info(
-                        f"New metric ({metric.name} = {metric.value:.5f}) "
-                        f"encountered. This will be used for checkpointing."
-                    )
-                else:
-                    assert metric.is_better(current_best)
-                    _logger.info(
-                        f"Improved metric ({metric.name}):  "
-                        f"{metric.value:.5f} (epoch {epoch}) > "
-                        f"{current_best.value:.5f} "
-                        f"(epoch {self.best_metric_epochs[current_best.name]})"
-                    )
-                self.best_metrics[metric.name] = metric
-                self.best_metric_epochs[metric.name] = epoch
-                best_path = self.metric_path(metric.name)
-                best_path.unlink(missing_ok=True)
-                _logger.info(
-                    f"Updating ({metric.name}) checkpoint to ({str(best_path)})"
-                )
-                self.epoch_path(epoch).link_to(best_path)
-                # TODO: move to "hardlink_to" when we upgrade to Python 3.10.
-                #   best_path.hardlink_to(self.epoch_path(epoch)
+    def _save_metrics_checkpoint(
+        self, improved_metrics: Sequence[Metric], epoch: int
+    ):
+        for metric in improved_metrics:
+            assert not math.isnan(metric.value)
+            best_path = self.metric_path(metric.name)
+            best_path.unlink(missing_ok=True)
+            _logger.info(
+                f"Updating (best {metric.name}) checkpoint, {best_path}"
+            )
+            # Hard link to the epoch checkpoint.
+            self.epoch_path(epoch).link_to(best_path)
+            # TODO: move to "hardlink_to" when we upgrade to Python 3.10.
+            #   best_path.hardlink_to(self.epoch_path(epoch)
 
-    def save_checkpoint(self, epoch: int, metrics: Sequence[Metric]):
-        _logger.info("Saving checkpoint")
+    def save_checkpoint(self, epoch: int, improved_metrics: Sequence[Metric]):
         self._save_epoch_checkpoint(epoch)
-        self._save_metrics_checkpoint(metrics, epoch)
+        self._save_metrics_checkpoint(improved_metrics, epoch)
 
         # Clean up history, if necessary.
         self._remove_epoch_checkpoints()
@@ -458,14 +541,6 @@ class ModelSaver:
         # checkpoint, and thus the file might not be deleted.
         file_to_remove.unlink()
         _logger.info(f"Unlinked old checkpoint: ({str(file_to_remove)})")
-
-    def load_best(self):
-        self.model = retinapy.models.load_model(self.model, self.best_path)
-        return self.model
-
-    def load_most_recent(self):
-        self.model = retinapy.models.load_model(self.model, self.last_path)
-        return self.model
 
     def save_recovery(self):
         raise NotImplementedError()

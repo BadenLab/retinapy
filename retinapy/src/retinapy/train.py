@@ -268,6 +268,7 @@ def train(
     )
 
     model_saver = retinapy._logging.ModelSaver(out_dir, model, optimizer)
+    metric_tracker = retinapy._logging.MetricTracker(out_dir)
 
     def _eval():
         nonlocal num_evals
@@ -331,9 +332,9 @@ def train(
                 _logger.info(
                     f"epoch: {epoch}/{num_epochs} | "
                     f"step: {batch_step:>4}/{len(train_dl)} "
-                    f"({batch_step/len(train_dl):>3.0%}) | "
-                    f"elapsed: {elapsed_min:>2}m:{elapsed_sec:02d}s | "
-                    f"({round(1/timers.batch.rolling_duration()):>2} batches/s) | "
+                    f"({batch_step/len(train_dl):>3.0%}) "
+                    f"{round(1/timers.batch.rolling_duration()):>2}/s | "
+                    f"elapsed: {elapsed_min:>1}m:{elapsed_sec:02d}s | "
                     f"loss: {loss_meter.avg:.5f} | "
                     f"out mean (sd) : {model_mean:>4.3f} ({model_sd:>4.3f})"
                 )
@@ -345,13 +346,14 @@ def train(
                 _eval()
             step += 1
 
-        # Evaluate and save at end of epoch.
-        # Print seconds using format strings
-
         _logger.info(
             f"Finished epoch in {round(timers.epoch.elapsed())} secs "
             f"(rolling duration: "
             f"{round(timers.batch.rolling_duration())} s/batch)"
         )
+        # Evaluate and save at end of epoch.
         metrics = _eval()
-        model_saver.save_checkpoint(epoch, metrics)
+        # If this on_metric_end type of behaviour grows, consider switching
+        # to callbacks.
+        improved_metrics = metric_tracker.on_epoch_end(metrics, epoch)
+        model_saver.save_checkpoint(epoch, improved_metrics)
