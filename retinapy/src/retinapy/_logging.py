@@ -337,9 +337,9 @@ class MetricTracker:
                 self.best_metrics[metric.name] = metric.value
                 self.best_metric_epochs[metric.name] = epoch
                 self._best_this_epoch.append(metric)
-            self._write_history()
-            self._write_best()
-            self._log_best()
+        self._write_history()
+        self._write_best()
+        self._log_best()
         return self._best_this_epoch
 
     def _write_history(self):
