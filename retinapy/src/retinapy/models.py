@@ -12,8 +12,9 @@ import logging
 _logger = logging.getLogger(__name__)
 
 
-def load_model(model, checkpoint_path: Union[str, pathlib.Path],
-               map_location=None):
+def load_model(
+    model, checkpoint_path: Union[str, pathlib.Path], map_location=None
+):
     checkpoint_path = pathlib.Path(checkpoint_path)
     if not checkpoint_path.exists():
         raise FileNotFoundError(
@@ -49,12 +50,12 @@ class DistLoss(nn.Module):
     def forward(self, prediction, target):
         # In some sense, the target is never 0. A best estimate is that it's
         # closer to this time value than the previous or next. In expectation,
-        # the distance will be 0.25 away from this time point, with a 
+        # the distance will be 0.25 away from this time point, with a
         # uniform prior.
         # TODO: move to actual data generation area?
-        #error = F.l1_loss(prediction, target)
-        #scaling = self.alpha + 1 / (self.beta + target)
-        #loss = torch.mean(error * scaling)
+        # error = F.l1_loss(prediction, target)
+        # scaling = self.alpha + 1 / (self.beta + target)
+        # loss = torch.mean(error * scaling)
         loss = F.mse_loss(prediction, target)
         return loss
 
@@ -89,6 +90,7 @@ class FcModel(nn.Module):
         x = self.act(self.fc_body(x))
         x = torch.clamp(x, min=None, max=self.clamp_max)
         return x
+
 
 class VAE(nn.Module):
     def __init__(self, in_n, hidden_n=100, z_n=2):
@@ -141,13 +143,13 @@ class MultiClusterModel(nn.Module):
                 padding=kernel_size // 2,
                 bias=True,
             ),
-            #nn.BatchNorm1d(self.l1_num_channels),
+            # nn.BatchNorm1d(self.l1_num_channels),
             nn.LeakyReLU(0.2, True),
             nn.Conv1d(
                 self.l1_num_channels,
                 self.l1_num_channels,
                 kernel_size=kernel_size,
-                stride=1, # was 2.
+                stride=1,  # was 2.
                 padding=kernel_size // 2,
                 bias=False,
             ),
@@ -155,39 +157,48 @@ class MultiClusterModel(nn.Module):
             nn.LeakyReLU(0.2, True),
         )
         self.layer1 = retinapy.nn.ResBlock1d(
-                self.l1_num_channels,
-                self.l2_num_channels,
-                self.l2_num_channels,
-                kernel_size=mid_kernel_size,
-                downsample=False,
-            )
+            self.l1_num_channels,
+            self.l2_num_channels,
+            self.l2_num_channels,
+            kernel_size=mid_kernel_size,
+            downsample=False,
+        )
         self.layer2_elements = []
         expansion = 1
-        num_halves = 4 # There are 2 other downsamples other than the midlayers.
-        for i in range(num_halves -  2):
+        num_halves = (
+            4  # There are 2 other downsamples other than the midlayers.
+        )
+        for i in range(num_halves - 2):
             self.layer2_elements.append(
-                    retinapy.nn.ResBlock1d(
-                        self.l2_num_channels,
-                        self.l2_num_channels*expansion,
-                        self.l2_num_channels,
-                        kernel_size=mid_kernel_size,
-                        downsample=True,
-                    ))
+                retinapy.nn.ResBlock1d(
+                    self.l2_num_channels,
+                    self.l2_num_channels * expansion,
+                    self.l2_num_channels,
+                    kernel_size=mid_kernel_size,
+                    downsample=True,
+                )
+            )
         self.layer2 = nn.Sequential(*self.layer2_elements)
         self.layer3 = retinapy.nn.ResBlock1d(
-                self.l2_num_channels,
-                self.l3_num_channels,
-                self.l3_num_channels,
-                kernel_size=mid_kernel_size,
-                downsample=False,
-            )
-        self.layer4 = nn.Conv1d(in_channels=self.l3_num_channels, 
-                               out_channels=1, kernel_size=5, stride=1, 
-                               padding=2, bias=True)
-        linear_in_len = 1 + (in_len - 1) // 2**(num_halves - 1)
-        self.linear = nn.Linear(in_features=linear_in_len,
-                    out_features=self.out_len,
-                )
+            self.l2_num_channels,
+            self.l3_num_channels,
+            self.l3_num_channels,
+            kernel_size=mid_kernel_size,
+            downsample=False,
+        )
+        self.layer4 = nn.Conv1d(
+            in_channels=self.l3_num_channels,
+            out_channels=1,
+            kernel_size=5,
+            stride=1,
+            padding=2,
+            bias=True,
+        )
+        linear_in_len = 1 + (in_len - 1) // 2 ** (num_halves - 1)
+        self.linear = nn.Linear(
+            in_features=linear_in_len,
+            out_features=self.out_len,
+        )
 
     def forward(self, x):
         # L
@@ -198,8 +209,6 @@ class MultiClusterModel(nn.Module):
         x = self.layer4(x)
         x = self.linear(torch.flatten(x, start_dim=1))
         return x
-
-
 
 
 class DistanceFieldCnnModel(nn.Module):
@@ -214,7 +223,7 @@ class DistanceFieldCnnModel(nn.Module):
         self.clamp_max = clamp_max
         self.l1_num_channels = 20
         self.l2_num_channels = 50
-        self.l3_num_channels = 200
+        self.l3_num_channels = 100
         kernel_size = 151
         mid_kernel_size = 7
         self.layer0 = nn.Sequential(
@@ -223,59 +232,76 @@ class DistanceFieldCnnModel(nn.Module):
                 self.l1_num_channels,
                 kernel_size=kernel_size,
                 stride=2,
-                padding=(kernel_size-1) // 2,
+                padding=(kernel_size - 1) // 2,
                 bias=True,
             ),
-            #nn.BatchNorm1d(self.l1_num_channels),
+            # nn.BatchNorm1d(self.l1_num_channels),
             nn.LeakyReLU(0.2, True),
             nn.Conv1d(
                 self.l1_num_channels,
-                self.l1_num_channels,
+                self.l2_num_channels,
                 kernel_size=kernel_size,
-                stride=1, # was 2.
-                padding=(kernel_size-1) // 2,
+                stride=1,  # was 2.
+                padding=(kernel_size - 1) // 2,
                 bias=False,
             ),
-            retinapy.nn.create_batch_norm(self.l1_num_channels),
+            retinapy.nn.create_batch_norm(self.l2_num_channels),
             nn.LeakyReLU(0.2, True),
         )
-        self.layer1 = retinapy.nn.ResBlock1d(
-                self.l1_num_channels,
+        self.layer1 = nn.Sequential(
+            retinapy.nn.ResBlock1d(
+                self.l2_num_channels,
                 self.l2_num_channels,
                 self.l2_num_channels,
                 kernel_size=mid_kernel_size,
                 downsample=False,
-            )
+            ),
+            retinapy.nn.ResBlock1d(
+                self.l2_num_channels,
+                self.l2_num_channels,
+                self.l2_num_channels,
+                kernel_size=mid_kernel_size,
+                downsample=False,
+            ),
+        )
         self.layer2_elements = []
         expansion = 1
-        num_halves = 4 # There are 2 other downsamples other than the midlayers.
-        for i in range(num_halves -  2):
+        num_halves = (
+            4  # There are 2 other downsamples other than the midlayers.
+        )
+        for i in range(num_halves - 2):
             self.layer2_elements.append(
-                    retinapy.nn.ResBlock1d(
-                        self.l2_num_channels,
-                        self.l2_num_channels*expansion,
-                        self.l2_num_channels,
-                        kernel_size=mid_kernel_size,
-                        downsample=True,
-                    ))
+                retinapy.nn.ResBlock1d(
+                    self.l2_num_channels,
+                    self.l2_num_channels * expansion,
+                    self.l2_num_channels,
+                    kernel_size=mid_kernel_size,
+                    downsample=True,
+                )
+            )
         self.layer2 = nn.Sequential(*self.layer2_elements)
         self.layer3 = retinapy.nn.ResBlock1d(
-                self.l2_num_channels,
-                self.l3_num_channels,
-                self.l3_num_channels,
-                kernel_size=mid_kernel_size,
-                downsample=False,
-            )
-        self.layer4 = nn.Conv1d(in_channels=self.l3_num_channels, 
-                               out_channels=1, kernel_size=5, stride=1, 
-                               padding=2, bias=True)
-        linear_in_len = 1 + (in_len - 1) // 2**(num_halves - 1)
-        self.linear = nn.Linear(in_features=linear_in_len,
-                    out_features=self.out_len,
-                )
+            self.l2_num_channels,
+            self.l3_num_channels,
+            self.l3_num_channels,
+            kernel_size=mid_kernel_size,
+            downsample=False,
+        )
+        self.layer4 = nn.Conv1d(
+            in_channels=self.l3_num_channels,
+            out_channels=1,
+            kernel_size=5,
+            stride=1,
+            padding=2,
+            bias=True,
+        )
+        linear_in_len = 1 + (in_len - 1) // 2 ** (num_halves - 1)
+        self.linear = nn.Linear(
+            in_features=linear_in_len,
+            out_features=self.out_len,
+        )
 
     def forward(self, x):
-        # L
         x = self.layer0(x)
         x = self.layer1(x)
         x = self.layer2(x)
@@ -283,7 +309,6 @@ class DistanceFieldCnnModel(nn.Module):
         x = self.layer4(x)
         x = self.linear(torch.flatten(x, start_dim=1))
         return x
-
 
 
 class DistFieldToSpikeModel(nn.Module):
@@ -294,9 +319,7 @@ class DistFieldToSpikeModel(nn.Module):
         c = 50
         n = 3
         self.layer1 = nn.Sequential(
-            retinapy.nn.ResBlock1d(
-                1, c, c, kernel_size=k, downsample=True
-            ),
+            retinapy.nn.ResBlock1d(1, c, c, kernel_size=k, downsample=True),
             *[
                 retinapy.nn.ResBlock1d(
                     c,
