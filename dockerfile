@@ -150,6 +150,7 @@ RUN pip install \
 		tensorboard \
 		kaleido \
 		torchinfo \
+		semantic_version \
 		mypy
 
 
