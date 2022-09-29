@@ -35,4 +35,4 @@ out
 bin
 
 # Generally too big to store in git, and no need for versioning.
-resources
+/resources
