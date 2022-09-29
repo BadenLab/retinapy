@@ -9,6 +9,10 @@
 # macOS dir files
 .DS_Store
 
+# PyCharm
+.idea/
+
+
 # Packaging
 *.egg-info/
 dist/
@@ -24,9 +28,11 @@ __pycache__/
 .ipynb_checkpoints/
 
 # Svelte web app
-web/node_modules
-web/public/build
-web/data
+/web/node_modules
+/web/public/build
+/web/public/data_full/
+/web/public/data_pca/
+/web/data
 
 
 # Reserved folders for input data, output data and output binaries.
