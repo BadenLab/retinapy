@@ -328,11 +328,12 @@ class MetricTracker:
                     )
                 else:
                     assert metric.is_better(current_best)
+                    gt_lt = ">" if metric.increasing else "<"
                     _logger.info(
-                        f"Improved metric ({metric.name}):  "
-                        f"{metric.value:.5f} (epoch {epoch}) > "
-                        f"{current_best:.5f} "
-                        f"(epoch {self.best_metric_epochs[metric.name]})"
+                        f"Improved metric ({metric.name}): ".ljust(40) + 
+                        f"{metric.value:.5f} {gt_lt} {current_best:.5f} " 
+                        f"(epoch {epoch} {gt_lt} "
+                        f"{self.best_metric_epochs[metric.name]})"
                     )
                 self.best_metrics[metric.name] = metric.value
                 self.best_metric_epochs[metric.name] = epoch
