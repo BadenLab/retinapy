@@ -178,8 +178,12 @@ def test_mirror_split(exp12):
     """Tests splitting a recording into multiple parts (the mirrored version).
 
     Tests that:
-        1. A split works.
+        1. A (3, 1, 1) and (1, 1, 3) split works.
+            - no errors
+            - number of output datasets is correct
+            - dataset sizes are as expected
         2. zero-value ratio causes an error.
+        3. requesting less than two splits causes an error.
     """
     # Test 1
     # Setup
@@ -208,6 +212,60 @@ def test_mirror_split(exp12):
     # Test 2
     with pytest.raises(ValueError):
         mea.split(exp12, (0, 1, 1))
+
+    # Test 3
+    with pytest.raises(ValueError):
+        mea.split(exp12, (1,))
+    with pytest.raises(ValueError):
+        mea.split(exp12, tuple())
+
+
+def test_mirror_split2(exp12):
+    """
+    Invariant test for mirror_split.
+
+    The other test inspects a specific case; here we test various splits and
+    check for expected invariants.
+
+    Tests that:
+        - split lengths sum up to the length of the original.
+        - splits have the same number of clusters.
+        - the values (stimulus and spikes) in the first half of the first 
+            split match the beginning of the original.
+    """
+    # Setup
+    seed = 123
+    rng = np.random.default_rng(seed)
+    num_trials = 20
+    orig_len = len(exp12)
+    num_splits = rng.integers(low=2, high=10, size=num_trials)
+    ratios = [
+        rng.integers(low=1, high=20, size=num_splits[i])
+        for i in range(num_trials)
+    ]
+
+    def check_sizes(ratio, splits):
+        # The combined splits have the same number of timesteps as the original.
+        total_len = sum([len(s) for s in splits])
+        assert total_len == orig_len
+        # The cluster count is also the same.
+        expected_num_clusters = len(exp12.cluster_ids)
+        for split in splits:
+            assert len(split.cluster_ids) == expected_num_clusters
+
+    def check_split1_values(ratio, splits):
+        split1_len = splits[0].stimulus.shape[0]
+        test_len = split1_len // 2
+        orig_stim = exp12.stimulus[:test_len]
+        orig_spikes = exp12.spikes[:test_len]
+        np.testing.assert_array_equal(orig_stim, splits[0].stimulus[:test_len])
+        np.testing.assert_array_equal(orig_spikes, splits[0].spikes[:test_len])
+
+    # Test
+    for i in range(num_trials):
+        splits = mea.mirror_split(exp12, ratios[i].tolist())
+        check_sizes(ratios[i], splits)
+        check_split1_values(ratios[i], splits)
 
 
 def test_decompress_recording(comp_exp12):
@@ -680,18 +738,22 @@ def test_labeled_spike_snippets():
         dtype=int,
     )
     # Make SpikeRecordings.
-    stimulus_events=np.arange(len(stimulus_pattern))
+    stimulus_events = np.arange(len(stimulus_pattern))
     recording1 = mea.CompressedSpikeRecording(
-        rec_name1, stimulus_pattern, 
+        rec_name1,
+        stimulus_pattern,
         stimulus_events,
-        spike_events1, cluster_ids1, 
+        spike_events1,
+        cluster_ids1,
         sensor_sample_rate=1,
         num_sensor_samples=len(stimulus_pattern),
     )
     recording2 = mea.CompressedSpikeRecording(
-        rec_name2, stimulus_pattern, 
+        rec_name2,
+        stimulus_pattern,
         stimulus_events,
-        spike_events2, cluster_ids2, 
+        spike_events2,
+        cluster_ids2,
         sensor_sample_rate=1,
         num_sensor_samples=len(stimulus_pattern),
     )

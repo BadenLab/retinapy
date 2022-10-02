@@ -45,9 +45,9 @@ def test_trainable_factories(rec0):
     cluster40_rec0 = rec0.clusters({40})
     # Test
     for config in configs:
-        t1 = sp.DistFieldCnnTrainableGroup.create_trainable(cluster40_rec0, 
+        t1 = sp.DistFieldCnnTGroup.create_trainable(cluster40_rec0, 
                                                             config)
-        t2 = sp.LinearNonLinearTrainableGroup.create_trainable(cluster40_rec0, 
+        t2 = sp.LinearNonLinearTGroup.create_trainable(cluster40_rec0, 
                                                                config)
         assert t1 is not None
         assert t2 is not None

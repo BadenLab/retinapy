@@ -2,11 +2,14 @@ import retinapy.mea as mea
 import retinapy.spikedistancefield as sdf
 import numpy as np
 import torch
-from typing import Tuple, Optional
+import bisect
+from typing import Tuple, Optional, List, Iterable
 
 
 class SnippetDataset(torch.utils.data.Dataset):
-    def __init__(self, recording: mea.SpikeRecording, snippet_len: int):
+    def __init__(
+        self, recording: mea.SpikeRecording, snippet_len: int, stride: int = 1
+    ):
         if snippet_len > len(recording):
             raise ValueError(
                 f"Snippet length ({snippet_len}) is larger than "
@@ -14,9 +17,13 @@ class SnippetDataset(torch.utils.data.Dataset):
             )
         self.snippet_len = snippet_len
         self.recording = recording
+        self.num_clusters = len(recording.cluster_ids)
+        self.num_timesteps = len(recording) - snippet_len + 1
         assert (
-            len(recording.cluster_ids) == 1
-        ), "For the moment, we only support a single cluster."
+            self.num_timesteps > 0
+        ), "Snippet length is longer than the recording."
+        self.stride = stride
+        self.num_strided_timesteps = self.num_timesteps // stride
 
     def __len__(self):
         """
@@ -24,9 +31,21 @@ class SnippetDataset(torch.utils.data.Dataset):
 
         There will be one sample for every timestep in the recording.
         """
-        res = len(self.recording) - self.snippet_len + 1
-        assert res > 0, "Snippet length is longer than the recording."
-        return res
+        return self.num_strided_timesteps * self.num_clusters
+
+    def _decode_index(self, index: int) -> Tuple[int, int]:
+        """
+        Decodes the index into the timestep and cluster id.
+
+        The data is effectively a 2D array with dimensions (time, cluster).
+        The index is the flattened index of this array, and so the timestep
+        increases as the index increases and wraps to the next cluster id when
+        it reaches the end of the recording.
+        """
+        timestep_idx = self.stride * (index % self.num_strided_timesteps)
+        cluster_idx = index // self.num_strided_timesteps
+        return timestep_idx, cluster_idx
+
 
     def __getitem__(self, idx):
         """
@@ -34,15 +53,17 @@ class SnippetDataset(torch.utils.data.Dataset):
 
         Index is one-to-one with the timesteps in the recording.
         """
-        begin_idx = idx
-        end_idx = idx + self.snippet_len
-        assert end_idx <= len(self.recording)
-        rec = self.recording.stimulus[begin_idx:end_idx]
-        assert (
-            len(self.recording.cluster_ids) == 1
-        ), "For the moment, we only support a single cluster."
-        spikes = self.recording.spikes[begin_idx:end_idx, 0]
-        return rec.T, spikes
+        start_time_idx, cluster_idx = self._decode_index(idx)
+        end_time_idx = start_time_idx + self.snippet_len
+        assert end_time_idx <= len(self.recording)
+        rec = self.recording.stimulus[start_time_idx:end_time_idx].T
+        spikes = self.recording.spikes[start_time_idx:end_time_idx, cluster_idx]
+        res = {"stimulus": rec, "spikes": spikes, "cluster_id": cluster_idx}
+        return res
+
+    @property
+    def sample_rate(self):
+        return self.recording.sample_rate
 
 
 class SpikeCountDataset(torch.utils.data.Dataset):
@@ -118,6 +139,7 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
         mask_end: int,
         pad: int,
         dist_clamp: float,
+        stride: int = 1,
         enable_augmentation: bool = True,
         allow_cheating: bool = False,
     ):
@@ -126,7 +148,9 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
         self.rng = np.random.default_rng(self.RNG_SEED)
         self.pad = pad
         self.dist_clamp = dist_clamp
-        self.ds = SnippetDataset(recording, snippet_len + self.pad)
+        self.ds = SnippetDataset(
+            recording, snippet_len + self.pad, stride=stride
+        )
         self.mask_slice = slice(mask_begin, mask_end)
         self.allow_cheating = allow_cheating
         self.stim_mean = np.expand_dims(recording.stimulus.mean(axis=0), -1)
@@ -146,6 +170,10 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
     def recording(self):
         return self.ds.recording
 
+    @property
+    def sample_rate(self):
+        return self.recording.sample_rate
+
     def _augment_stimulus(self, stimulus):
         """
         Augment a stimulus portion of a sample.
@@ -162,10 +190,13 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
         max_length = stimulus.shape[1]
         center, length = self.rng.integers(low=0, high=max_length, size=(2,))
         left = max(0, center - length // 2)
-        right = min(max_length-1, center + length // 2 + 1)
-        bin_noise = self.rng.normal(self.NOISE_MU, self.NOISE_SD, 
-                                size=(self.num_stim_channels, (right-left)))
-        stimulus = (stimulus * scale + offset_noise)
+        right = min(max_length - 1, center + length // 2 + 1)
+        bin_noise = self.rng.normal(
+            self.NOISE_MU,
+            self.NOISE_SD,
+            size=(self.num_stim_channels, (right - left)),
+        )
+        stimulus = stimulus * scale + offset_noise
         stimulus[:, left:right] += bin_noise
         return stimulus
 
@@ -229,8 +260,11 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
         is returned.
         """
         # 1. Get the snippet. Make it extra long, for the distance field calc.
-        extra_long_stimulus, extra_long_spikes = self.ds[idx]
-        # For some unknown reason, the following copy call makes 
+        sample = self.ds[idx]
+        extra_long_stimulus = sample["stimulus"]
+        extra_long_spikes = sample["spikes"]
+        cluster_id = sample["cluster_id"]
+        # For some unknown reason, the following copy call makes
         # training about 5x faster, and it has no effect when called on the
         # stimulus array. Maybe related to the copy that is done below for
         # target_spikes?
@@ -254,8 +288,80 @@ class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
         spikes = extra_long_spikes[0 : -self.pad]
         # 5. Normalize
         stimulus_norm = self.normalize_stimulus(stimulus)
-        #spikes_norm = self.normalize_spikes(spikes)
+        # spikes_norm = self.normalize_spikes(spikes)
         # TODO: what about cheating? Why now?
         # 6. Stack stimulus and spike data to make X.
         snippet = np.vstack((stimulus_norm, spikes))
-        return snippet, target_spikes, dist
+        # Returning a dictionary is more flexible than returning a tuple, as
+        # we can add to the dictionary without breaking existing consumers of
+        # the dataset.
+        res = {
+            "snippet": snippet,
+            "dist": dist,
+            "target_spikes": target_spikes,
+            "cluster_id": cluster_id,
+        }
+        return res
+
+
+class LabeledConcatDataset(torch.utils.data.Dataset):
+    """
+    Dataset that concatenates datasets and inserts a dataset label.
+
+    This is an edited version of PyTorch's ConcatDataset, with the addition
+    of a dataset index being included in each sample. This is useful for
+    making a multi-recording dataset easily from a list of single recording
+    datasets. The PyTorch implementation wasn't sufficient, as we want to
+    include information of which recording a sample belongs to.
+    """
+
+    datasets: List[torch.utils.data.Dataset]
+    cumulative_sizes: List[int]
+
+    @staticmethod
+    def cumsum(sequence):
+        r, s = [], 0
+        for e in sequence:
+            l = len(e)
+            r.append(l + s)
+            s += l
+        return r
+
+    def __init__(
+        self,
+        datasets: Iterable[torch.utils.data.Dataset],
+        label_key: str = "id",
+    ) -> None:
+        super(LabeledConcatDataset, self).__init__()
+        self.datasets = list(datasets)
+        self.label_key = label_key
+        assert len(self.datasets) > 0, (
+            "datasets should not be an empty " "iterable"
+        )
+        for d in self.datasets:
+            assert not isinstance(
+                d, torch.utils.data.IterableDataset
+            ), "ConcatDataset does not support IterableDataset"
+        self.cumulative_sizes = self.cumsum(self.datasets)
+
+    def __len__(self):
+        return self.cumulative_sizes[-1]
+
+    def __getitem__(self, idx):
+        if idx < 0:
+            if -idx > len(self):
+                raise ValueError(
+                    "absolute value of index should not exceed dataset length"
+                )
+            idx = len(self) + idx
+        dataset_idx = bisect.bisect_right(self.cumulative_sizes, idx)
+        if dataset_idx == 0:
+            sample_idx = idx
+        else:
+            sample_idx = idx - self.cumulative_sizes[dataset_idx - 1]
+        sample = self.datasets[dataset_idx][sample_idx]
+        assert isinstance(
+            sample, dict
+        ), "Sample must be a dictionary in order to add a label."
+        sample[self.label_key] = dataset_idx
+        return sample

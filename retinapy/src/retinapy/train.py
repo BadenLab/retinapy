@@ -92,6 +92,7 @@ class Trainable:
         test_ds: torch.utils.data.Dataset,
         model: torch.nn.Module,
         label: str,
+        # TODO: manage GPU usage.
     ):
         """
         Args:
@@ -154,7 +155,7 @@ def _create_dataloaders(train_ds, val_ds, test_ds, batch_size):
         batch_size=batch_size,
         shuffle=True,
         drop_last=True,
-        num_workers=20,
+        num_workers=24,
         pin_memory=True,
     )
     val_dl = torch.utils.data.DataLoader(
@@ -163,7 +164,7 @@ def _create_dataloaders(train_ds, val_ds, test_ds, batch_size):
         # For debugging, it's nice to see a variety:
         shuffle=True,
         drop_last=True,
-        num_workers=20,
+        num_workers=24,
         pin_memory=True,
     )
     test_dl = torch.utils.data.DataLoader(
@@ -171,7 +172,7 @@ def _create_dataloaders(train_ds, val_ds, test_ds, batch_size):
         batch_size=batch_size,
         shuffle=False,
         drop_last=False,
-        num_workers=20,
+        num_workers=24,
     )
     return train_dl, val_dl, test_dl
 
@@ -313,7 +314,7 @@ def train(
             grad_scaler.step(optimizer)
             grad_scaler.update()
 
-            batch_size = len(sample[0])
+            batch_size = len(next(iter(sample.values())))
             loss_meter.update(total_loss.item(), batch_size)
             metrics = [
                 retinapy._logging.Metric(
@@ -342,14 +343,16 @@ def train(
 
             # Evaluate.
             # (step + 1), as we don't want to evaluate on the first step.
-            if steps_til_eval and (step + 1) % steps_til_eval == 0:
-                _eval()
+            if steps_til_eval and (batch_step + 1) % steps_til_eval == 0:
+                is_near_epoch_end = (batch_step + steps_til_eval >= len(train_dl))
+                if not is_near_epoch_end:
+                    _eval()
             step += 1
 
         _logger.info(
             f"Finished epoch in {round(timers.epoch.elapsed())} secs "
             f"(rolling duration: "
-            f"{round(timers.batch.rolling_duration())} s/batch)"
+            f"{round(timers.epoch.rolling_duration())} s/epoch)"
         )
         # Evaluate and save at end of epoch.
         metrics = _eval()

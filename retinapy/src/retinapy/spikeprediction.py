@@ -2,6 +2,8 @@ import argparse
 from collections import defaultdict
 import logging
 import pathlib
+from typing import Iterable
+import math
 
 import yaml
 
@@ -74,7 +76,7 @@ def parse_args():
     data_group.add_argument("--stimulus-pattern", type=str, default=None, metavar="FILE", help="Path to stimulus pattern file.")
     data_group.add_argument("--stimulus", type=str, default=None, metavar="FILE", help="Path to stimulus recording file.")
     data_group.add_argument("--response", type=str, default=None, metavar="FILE", help="Path to response recording file.")
-    data_group.add_argument("--recording-name", type=str, default=None, help="Name of recording within the recording file.")
+    data_group.add_argument("--recording-names", nargs='+', default=None, help="Names of recordings within the recording file.")
     data_group.add_argument("--cluster-id", type=int, default=None, help="Cluster ID to train on.")
 
     parser.add_argument("--steps-til-eval", type=int, default=None, help="Steps until validation.")
@@ -378,6 +380,198 @@ class LinearNonLinearTrainable(retinapy.train.Trainable):
         return metrics
 
 
+class DistFieldTrainableMC(retinapy.train.Trainable):
+    def __init__(
+        self, train_ds, val_ds, test_ds, model, model_label, eval_lengths
+    ):
+        """Trainable for a multi-cluster distance field model.
+
+        This is a minimal extension of the DistFieldTrainable.
+        """
+        super(DistFieldTrainableMC, self).__init__(
+            train_ds, val_ds, test_ds, model, model_label
+        )
+        self.dist_loss_fn = retinapy.models.dist_loss
+        self.eval_lengths = eval_lengths
+        self.min_dist = 0.5
+        self.dist_norm = 20
+        # Network output should ideally have mean,sd = (0, 1). Network output
+        # 20*exp([-3, 3])  = [1.0, 402], which is a pretty good range, with
+        # 20 being the mid point. Is this too low?
+        self.max_pearson_len = 1e6
+
+    def loss(self, m_dist, z_mu, z_lorvar, target):
+        # Scale to get roughly in the ballpark of 1.
+        dist_loss = self.dist_loss_fn(m_dist, target)
+        kl_loss = -0.5 * torch.sum(1 + z_lorvar - z_mu.pow(2) - z_lorvar.exp())
+        #β = 0.05
+        β = 0
+        return dist_loss + β * kl_loss
+
+    def forward(self, sample):
+        masked_snippet = sample["snippet"].float().cuda()
+        dist = sample["dist"].float().cuda()
+        rec_id = sample["rec_id"].int().cuda()
+        cluster_id = sample["cluster_id"].int().cuda()
+        m_dist, z_mu, z_logvar = self.model(masked_snippet, rec_id, cluster_id)
+        # Dist model
+        y = self.distfield_to_nn_output(dist)
+        loss = self.loss(m_dist, z_mu, z_logvar, target=y)
+        return m_dist, loss
+
+    def quick_infer(self, dist, eval_len):
+        """Quickly infer the number of spikes in the eval region.
+
+        An approximate inference used for evaluation.
+
+        Returns:
+            the number of spikes in the region.
+        """
+        threshold = 0.4
+        res = (dist[:, 0:eval_len] < threshold).sum(dim=1)
+        return res
+
+    def distfield_to_nn_output(self, distfield):
+        return torch.log((distfield + self.min_dist) / self.dist_norm)
+
+    def nn_output_to_distfield(self, nn_output):
+        return torch.exp(nn_output) * self.dist_norm - self.min_dist
+
+    def evaluate(self, val_dl):
+        predictions = defaultdict(list)
+        targets = defaultdict(list)
+        loss_meter = retinapy._logging.Meter("loss")
+        for i, sample in enumerate(val_dl):
+            # Don't run out of memory, or take too long.
+            num_so_far = val_dl.batch_size * i
+            if num_so_far > self.max_pearson_len:
+                break
+            target_spikes = sample["target_spikes"].float().cuda()
+            batch_len = target_spikes.shape[0]
+            model_output, loss = self.forward(sample)
+            loss_meter.update(loss.item(), batch_len)
+            # Count accuracies
+            for eval_len in self.eval_lengths:
+                pred = self.quick_infer(model_output, eval_len=eval_len)
+                y = torch.sum(target_spikes[:, 0:eval_len], dim=1)
+                predictions[eval_len].append(pred)
+                targets[eval_len].append(y)
+
+        metrics = [
+            retinapy._logging.Metric("loss", loss_meter.avg, increasing=False)
+        ]
+        for eval_len in self.eval_lengths:
+            p = torch.cat(predictions[eval_len])
+            t = torch.cat(targets[eval_len])
+            acc = (p == t).float().mean().item()
+            pearson_corr = scipy.stats.pearsonr(p.cpu().numpy(), 
+                                                t.cpu().numpy())[0]
+            metrics.append(
+                retinapy._logging.Metric(f"accuracy-{eval_len}_bins", acc)
+            )
+            metrics.append(
+                retinapy._logging.Metric(
+                    f"pearson_corr-{eval_len}_bins", pearson_corr
+                )
+            )
+        return metrics
+
+
+class DistFieldTrainable_(retinapy.train.Trainable):
+
+    eval_ms: Iterable[int]
+
+    DEFAULT_EVAL_MS = [10, 50, 100]
+
+    def __init__(self, train_ds, val_ds, test_ds, model, model_label):
+        super(DistFieldTrainable_, self).__init__(
+            train_ds, val_ds, test_ds, model, model_label
+        )
+        sample_rates_equal = (
+            train_ds.sample_rate == test_ds.sample_rate == val_ds.sample_rate
+        )
+        if not sample_rates_equal:
+            raise ValueError(
+                "Train, validation and test datasets do not have "
+                f"the same sample rate. Got ({train_ds.sample_rate:.5f}, "
+                f"{val_ds.sample_rate:.5f}, {test_ds.sample_rate:.5f})"
+            )
+        self.eval_ms = self.DEFAULT_EVAL_MS
+        self.max_eval_sequence_len = 1e10
+
+    def eval_ms_to_bins(self, eval_ms: Iterable[float]) -> Iterable[int]:
+        res = []
+        for ms in eval_ms:
+            num_bins = max(1, round(eval_ms * (self.sample_rate / 1000)))
+            res.append(num_bins)
+        return res
+
+    @property
+    def sample_period_ms(self):
+        return 1000 / self.sample_rate
+
+    @property
+    def sample_rate(self):
+        sample_rates_equal = (
+            self.train_ds.sample_rate
+            == self.test_ds.sample_rate
+            == self.val_ds.sample_rate
+        )
+        assert sample_rates_equal
+        # We can use any of the datasets.
+        return self.train_ds.sample_rate
+
+    def quick_infer(self, dist, eval_len):
+        """Quickly infer the number of spikes in the eval region.
+
+        An approximate inference used for evaluation.
+
+        Returns:
+            the number of spikes in the region.
+        """
+        threshold = 0.4
+        res = (dist[:, 0:eval_len] < threshold).sum(dim=1)
+        return res
+
+    def evaluate(self, val_dl):
+        predictions = defaultdict(list)
+        targets = defaultdict(list)
+        loss_meter = retinapy._logging.Meter("loss")
+        eval_lengths = sorted(self.eval_ms_to_bins(self.eval_ms))
+        for i, sample in enumerate(val_dl):
+            # Don't run out of memory.
+            if len(predictions[eval_lengths[0]]) > self.max_eval_sequence_len:
+                break
+            target_spikes = sample["target_spikes"].float().cuda()
+            batch_len = target_spikes.shape[0]
+            model_output, loss = self.forward(sample)
+            loss_meter.update(loss.item(), batch_len)
+            # Count accuracies
+            for eval_len in eval_lengths:
+                pred = self.quick_infer(model_output, eval_len=eval_len)
+                y = torch.sum(target_spikes[:, 0:eval_len], dim=1)
+                predictions[eval_len].append(pred)
+                targets[eval_len].append(y)
+
+        metrics = [
+            retinapy._logging.Metric("loss", loss_meter.avg, increasing=False)
+        ]
+        for eval_len in eval_lengths:
+            p = torch.cat(predictions[eval_len])
+            t = torch.cat(targets[eval_len])
+            acc = (p == t).float().mean().item()
+            pearson_corr = scipy.stats.pearsonr(p.cpu(), t.cpu())[0]
+            metrics.append(
+                retinapy._logging.Metric(f"accuracy-{eval_len}_bins", acc)
+            )
+            metrics.append(
+                retinapy._logging.Metric(
+                    f"pearson_corr-{eval_len}_bins", pearson_corr
+                )
+            )
+        return metrics
+
+
 class DistFieldTrainable(retinapy.train.Trainable):
     def __init__(
         self, train_ds, val_ds, test_ds, model, model_label, eval_lengths
@@ -394,7 +588,7 @@ class DistFieldTrainable(retinapy.train.Trainable):
         super(DistFieldTrainable, self).__init__(
             train_ds, val_ds, test_ds, model, model_label
         )
-        self.loss_fn = retinapy.models.DistLoss()
+        self.loss_fn = retinapy.models.dist_loss
         self.eval_lengths = eval_lengths
         self.min_dist = 0.5
         self.dist_norm = 20
@@ -404,11 +598,11 @@ class DistFieldTrainable(retinapy.train.Trainable):
         # 20 being the mid point. Is this too low?
 
     def forward(self, sample):
-        masked_snippet, _, dist = sample
+        masked_snippet = sample["snippet"].float().cuda()
+        dist = sample["dist"].float().cuda()
         masked_snippet = masked_snippet.float().cuda()
         model_output = self.model(masked_snippet)
         # Dist model
-        dist = dist.float().cuda()
         y = self.distfield_to_nn_output(dist)
         loss = self.loss_fn(model_output, target=y)
         return model_output, loss
@@ -435,14 +629,10 @@ class DistFieldTrainable(retinapy.train.Trainable):
         predictions = defaultdict(list)
         targets = defaultdict(list)
         loss_meter = retinapy._logging.Meter("loss")
-        for (masked_snippet, target_spikes, dist) in val_dl:
-            X = masked_snippet.float().cuda()
-            target_spikes = target_spikes.float().cuda()
-            dist = dist.float().cuda()
-            model_output, loss = self.forward(
-                (masked_snippet, target_spikes, dist)
-            )
-            batch_len = X.shape[0]
+        for sample in val_dl:
+            target_spikes = sample["target_spikes"].float().cuda()
+            batch_len = target_spikes.shape[0]
+            model_output, loss = self.forward(sample)
             loss_meter.update(loss.item(), batch_len)
             # Count accuracies
             for eval_len in self.eval_lengths:
@@ -468,6 +658,61 @@ class DistFieldTrainable(retinapy.train.Trainable):
                 )
             )
         return metrics
+
+
+def create_multi_cluster_df_datasets(
+    recordings: Iterable[mea.CompressedSpikeRecording],
+    input_len: int,
+    output_len: int,
+    downsample_factor: int,
+):
+    train_ds = []
+    val_ds = []
+    test_ds = []
+    stride = 3
+    for rec in recordings:
+        dc_rec = mea.decompress_recording(rec, downsample=downsample_factor)
+        train_val_test_splits = mea.mirror_split(
+            dc_rec, split_ratio=SPLIT_RATIO
+        )
+        snippet_len = input_len + output_len
+        train_val_test_datasets = [
+            retinapy.dataset.SpikeDistanceFieldDataset(
+                r,
+                snippet_len=snippet_len,
+                mask_begin=input_len,
+                mask_end=snippet_len,
+                pad=round(ms_to_num_bins(LOSS_CALC_PAD_MS, downsample_factor)),
+                dist_clamp=round(
+                    ms_to_num_bins(DIST_CLAMP_MS, downsample_factor)
+                ),
+                stride=stride,
+                enable_augmentation=use_augmentation,
+                allow_cheating=False,
+            )
+            for (r, use_augmentation) in zip(
+                # train_val_test_splits, [True, False, False]
+                # For the moment, while the validation just takes a small
+                # portion of the validation set.
+                train_val_test_splits,
+                [True, True, False],
+            )
+        ]
+        train_ds.append(train_val_test_datasets[0])
+        val_ds.append(train_val_test_datasets[1])
+        test_ds.append(train_val_test_datasets[2])
+    rec_key = "rec_id"
+    concat_train_ds = retinapy.dataset.LabeledConcatDataset(
+        train_ds, label_key=rec_key
+    )
+    concat_val_ds = retinapy.dataset.LabeledConcatDataset(
+        val_ds, label_key=rec_key
+    )
+    concat_test_ds = retinapy.dataset.LabeledConcatDataset(
+        test_ds, label_key=rec_key
+    )
+    res = (concat_train_ds, concat_val_ds, concat_test_ds)
+    return res
 
 
 def create_distfield_datasets(
@@ -532,11 +777,60 @@ class TrainableGroup:
     def trainable_label(self, config):
         raise NotImplementedError
 
-    def create_trainable(self, rec, config):
+    def create_trainable(
+        self, recordings: Iterable[mea.CompressedSpikeRecording], config
+    ):
         raise NotImplementedError
 
 
-class DistFieldCnnTrainableGroup(TrainableGroup):
+class MultiClusterDistFieldTGroup(TrainableGroup):
+    @staticmethod
+    def trainable_label(config):
+        return (
+            f"MultiClusterDistField-{config.downsample_factor}"
+            f"ds_{config.input_len}in_{config.output_len}out"
+        )
+
+    @classmethod
+    def create_trainable(cls, recordings, config):
+        train_ds, val_ds, test_ds = create_multi_cluster_df_datasets(
+            recordings,
+            config.input_len,
+            config.output_len,
+            config.downsample_factor,
+        )
+        max_num_clusters = max([len(r.cluster_ids) for r in recordings])
+        model = retinapy.models.MultiClusterModel(
+            config.input_len + config.output_len,
+            config.output_len,
+            cls.num_downsample_layers(config.input_len, config.output_len),
+            len(recordings),
+            max_num_clusters,
+        )
+        res = DistFieldTrainableMC(
+            train_ds,
+            val_ds,
+            test_ds,
+            model,
+            DistFieldCnnTGroup.trainable_label(config),
+            eval_lengths=[10, 20, 50],
+        )
+        return res
+
+    @staticmethod
+    def num_downsample_layers(in_len, out_len):
+        res_f = math.log(in_len / out_len, 2)
+        num_downsample = int(res_f)
+        if res_f - num_downsample > 0.4:
+            logging.warning(
+                "Model input/output lengths are not well matched. "
+                f"Downsample desired: ({res_f}), downsample being used: "
+                f"({num_downsample})."
+            )
+        return num_downsample
+
+
+class DistFieldCnnTGroup(TrainableGroup):
     @staticmethod
     def trainable_label(config):
         return (
@@ -545,7 +839,8 @@ class DistFieldCnnTrainableGroup(TrainableGroup):
         )
 
     @staticmethod
-    def create_trainable(rec, config):
+    def create_trainable(recordings, config):
+        rec = recordings[0]
         output_lens = {1984: 200, 992: 100, 3174: 400, 1586: 200}
         model_out_len = output_lens[config.input_len]
         train_ds, val_ds, test_ds = create_distfield_datasets(
@@ -561,13 +856,13 @@ class DistFieldCnnTrainableGroup(TrainableGroup):
             val_ds,
             test_ds,
             model,
-            DistFieldCnnTrainableGroup.trainable_label(config),
-            eval_lengths=[1, 2, 5, 10, 20, 50, 100],
+            DistFieldCnnTGroup.trainable_label(config),
+            eval_lengths=[5, 10, 20, 50, 100],
         )
         return res
 
 
-class LinearNonLinearTrainableGroup(TrainableGroup):
+class LinearNonLinearTGroup(TrainableGroup):
     @staticmethod
     def trainable_label(config):
         return (
@@ -576,30 +871,25 @@ class LinearNonLinearTrainableGroup(TrainableGroup):
         )
 
     @staticmethod
-    def create_trainable(rec, config):
+    def create_trainable(recordings, config):
+        rec = recordings[0]
         num_inputs = IN_CHANNELS * config.input_len
         m = retinapy.models.LinearNonlinear(in_n=num_inputs, out_n=1)
         train_ds, val_ds, test_ds = create_count_datasets(
             rec, config.input_len, config.output_len, config.downsample_factor
         )
-        label = LinearNonLinearTrainableGroup.trainable_label(config)
+        label = LinearNonLinearTGroup.trainable_label(config)
         return LinearNonLinearTrainable(train_ds, val_ds, test_ds, m, label)
 
 
 def _train(out_dir):
-    rec = mea.single_3brain_recording(
-        opt.recording_name,
-        mea.load_stimulus_pattern(opt.stimulus_pattern),
-        mea.load_recorded_stimulus(opt.stimulus),
-        mea.load_response(opt.response),
-        include_clusters={opt.cluster_id},
-    )
     print("Models & Configurations")
     print("=======================")
     # Product of models and configs
     trainable_groups = {
-        "LinearNonLinear": LinearNonLinearTrainableGroup,
-        "DistFieldCnn": DistFieldCnnTrainableGroup,
+        "LinearNonLinear": LinearNonLinearTGroup,
+        "DistFieldCnn": DistFieldCnnTGroup,
+        "MultiClusterDistField": MultiClusterDistFieldTGroup,
     }
 
     def run_id(model_str, config):
@@ -625,7 +915,30 @@ def _train(out_dir):
     )
     total_trainables = sum(do_trainable.values())
     logging.info(f"Total: {total_trainables} models to be trained.")
-    # filtered_configs = all_configs[14:]
+
+    # Load the data.
+    #recordings = mea.load_3brain_recordings(
+    #    opt.stimulus_pattern,
+    #    opt.stimulus,
+    #    opt.response,
+    #)
+    ## Filter recordings, if requested.
+    #if opt.recording_names is not None:
+    #    recordings = [
+    #        r for r in recordings if r.name in set(opt.recording_names)
+    #    ]
+    #logging.info(f"Loaded {len(recordings)} recordings, compressed:")
+    #for r in recordings:
+    #    logging.info(f"  {r.name}")
+    recordings = [mea.single_3brain_recording(
+       opt.recording_names[0],
+       mea.load_stimulus_pattern(opt.stimulus_pattern),
+       mea.load_recorded_stimulus(opt.stimulus),
+       mea.load_response(opt.response),
+       #include_clusters={21, 138},
+       #include_clusters={21, },
+    )]
+
     done_trainables = set()
     for c in all_configs:
         for tg in trainable_groups.values():
@@ -634,7 +947,7 @@ def _train(out_dir):
                 continue
             if not do_trainable[t_label]:
                 continue
-            t = tg.create_trainable(rec, c)
+            t = tg.create_trainable(recordings, c)
             if t is None:
                 logging.warning(
                     f"Skipping. Model ({t_label}) isn't yet supported."

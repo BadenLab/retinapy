@@ -1,5 +1,6 @@
 from collections import namedtuple
 import itertools
+import concurrent.futures
 import logging
 import math
 from typing import Dict, List, Tuple, Union, Sequence, Optional, Set
@@ -247,6 +248,8 @@ def split(recording: SpikeRecording, split_ratio: Sequence[int]):
             to create a train-val-test split with 60% of the data for training,
             20% for validation, and 20% for testing.
     """
+    if len(split_ratio) < 2:
+        raise ValueError("Can't split a recording into fewer than 2 parts.")
     if not all([r > 0 for r in split_ratio]):
         raise ValueError(f"Split ratios must be positive. Got ({split_ratio}).")
     divisions = sum(split_ratio)
@@ -418,16 +421,33 @@ def load_3brain_recordings(
     stimulus_recordings = load_recorded_stimulus(stimulus_recording_path)
     response_recordings = load_response(response_recording_path)
     rec_names = recording_names(response_recordings)
-    res = []
+    # Collect the recordings to load.
+    to_load = []
     for rec_name in rec_names:
         do_load = include is None or rec_name in include
-        if not do_load:
-            continue
+        if do_load:
+            to_load.append(rec_name)
+    done = []
+
+    def _load(rec_name):
         rec_obj = single_3brain_recording(
             rec_name, stimulus_pattern, stimulus_recordings, response_recordings
         )
-        res.append(rec_obj)
-    return res
+        return rec_obj
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        future_to_name = {
+            executor.submit(_load, rec_name): rec_name for rec_name in to_load
+        }
+        for future in concurrent.futures.as_completed(future_to_name):
+            rec_name = future_to_name[future]
+            try:
+                data = future.result()
+            except Exception as exc:
+                print(f"Loading {rec_name} generated an exception: {exc}.")
+            else:
+                done.append(data)
+    return done
 
 
 def single_3brain_recording(
@@ -481,6 +501,23 @@ def single_3brain_recording(
         sensor_sample_rate,
         num_samples,
     )
+    return res
+
+
+def decompress_recordings(
+        recordings: List[CompressedSpikeRecording], downsample : int = 1,
+        num_workers = 5) -> List[SpikeRecording]:
+    """
+    Decompress multiple recordings.
+    """
+    done = []
+
+    def _decompress(rec):
+        return decompress_recording(rec, downsample)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+        res = list(executor.map(_decompress, recordings))
+        executor.shutdown(wait=True)
     return res
 
 
