@@ -105,13 +105,13 @@ def parse_args():
 
 
 class Configuration:
-    def __init__(self, downsample_factor, input_len, output_len):
-        self.downsample_factor = downsample_factor
+    def __init__(self, downsample, input_len, output_len):
+        self.downsample = downsample
         self.input_len = input_len
         self.output_len = output_len
 
     def __str__(self):
-        return f"{self.downsample_factor}ds_{self.input_len}in_{self.output_len}out"
+        return f"{self.downsample}ds_{self.input_len}in_{self.output_len}out"
 
 
 """
@@ -320,19 +320,17 @@ def ms_to_num_bins(time_ms, downsample_factor):
 
 def get_configurations():
     res = []
-    for downsample_factor in downsample_factors:
+    for downsample in downsample_factors:
         for in_len in input_lengths_ms:
-            in_bins = ms_to_num_bins(in_len, downsample_factor)
+            in_bins = ms_to_num_bins(in_len, downsample)
             for out_len in output_lenghts_ms:
-                out_bins = ms_to_num_bins(out_len, downsample_factor)
+                out_bins = ms_to_num_bins(out_len, downsample)
                 if in_bins < 1 or out_bins < 1:
                     # Not enough resolution at this downsample factor.
                     continue
                 in_bins_int = round(in_bins)
                 out_bins_int = round(out_bins)
-                res.append(
-                    Configuration(downsample_factor, in_bins_int, out_bins_int)
-                )
+                res.append(Configuration(downsample, in_bins_int, out_bins_int))
     return res
 
 
@@ -404,8 +402,8 @@ class DistFieldTrainableMC(retinapy.train.Trainable):
         # Scale to get roughly in the ballpark of 1.
         dist_loss = self.dist_loss_fn(m_dist, target)
         kl_loss = -0.5 * torch.sum(1 + z_lorvar - z_mu.pow(2) - z_lorvar.exp())
-        #β = 0.05
-        β = 0
+        β = 0.05
+        # β = 0
         return dist_loss + β * kl_loss
 
     def forward(self, sample):
@@ -464,8 +462,9 @@ class DistFieldTrainableMC(retinapy.train.Trainable):
             p = torch.cat(predictions[eval_len])
             t = torch.cat(targets[eval_len])
             acc = (p == t).float().mean().item()
-            pearson_corr = scipy.stats.pearsonr(p.cpu().numpy(), 
-                                                t.cpu().numpy())[0]
+            pearson_corr = scipy.stats.pearsonr(
+                p.cpu().numpy(), t.cpu().numpy()
+            )[0]
             metrics.append(
                 retinapy._logging.Metric(f"accuracy-{eval_len}_bins", acc)
             )
@@ -664,14 +663,14 @@ def create_multi_cluster_df_datasets(
     recordings: Iterable[mea.CompressedSpikeRecording],
     input_len: int,
     output_len: int,
-    downsample_factor: int,
+    downsample: int,
 ):
     train_ds = []
     val_ds = []
     test_ds = []
     stride = 3
     for rec in recordings:
-        dc_rec = mea.decompress_recording(rec, downsample=downsample_factor)
+        dc_rec = mea.decompress_recording(rec, downsample=downsample)
         train_val_test_splits = mea.mirror_split(
             dc_rec, split_ratio=SPLIT_RATIO
         )
@@ -682,10 +681,8 @@ def create_multi_cluster_df_datasets(
                 snippet_len=snippet_len,
                 mask_begin=input_len,
                 mask_end=snippet_len,
-                pad=round(ms_to_num_bins(LOSS_CALC_PAD_MS, downsample_factor)),
-                dist_clamp=round(
-                    ms_to_num_bins(DIST_CLAMP_MS, downsample_factor)
-                ),
+                pad=round(ms_to_num_bins(LOSS_CALC_PAD_MS, downsample)),
+                dist_clamp=round(ms_to_num_bins(DIST_CLAMP_MS, downsample)),
                 stride=stride,
                 enable_augmentation=use_augmentation,
                 allow_cheating=False,
@@ -719,9 +716,9 @@ def create_distfield_datasets(
     recording: mea.CompressedSpikeRecording,
     input_len: int,
     output_len: int,
-    downsample_factor: int,
+    downsample: int,
 ):
-    rec = mea.decompress_recording(recording, downsample=downsample_factor)
+    rec = mea.decompress_recording(recording, downsample=downsample)
     train_val_test_splits = mea.mirror_split(rec, split_ratio=SPLIT_RATIO)
     snippet_len = input_len + output_len
     train_val_test_datasets = [
@@ -746,7 +743,7 @@ def create_count_datasets(
     recording: mea.CompressedSpikeRecording,
     input_len: int,
     output_len: int,
-    downsample_factor: int,
+    downsample: int,
 ):
     """
     Creates the spike count datasets for the given recording data.
@@ -759,7 +756,7 @@ def create_count_datasets(
     The length of the input history, the output binning duration and the
     downsample rate can be configured.
     """
-    rec = mea.decompress_recording(recording, downsample=downsample_factor)
+    rec = mea.decompress_recording(recording, downsample=downsample)
     train_val_test_splits = mea.mirror_split(rec, split_ratio=SPLIT_RATIO)
     # train_val_test_splits = mea.split(rec, split_ratio=SPLIT_RATIO)
     train_val_test_datasets = [
@@ -787,7 +784,7 @@ class MultiClusterDistFieldTGroup(TrainableGroup):
     @staticmethod
     def trainable_label(config):
         return (
-            f"MultiClusterDistField-{config.downsample_factor}"
+            f"MultiClusterDistField-{config.downsample}"
             f"ds_{config.input_len}in_{config.output_len}out"
         )
 
@@ -797,7 +794,7 @@ class MultiClusterDistFieldTGroup(TrainableGroup):
             recordings,
             config.input_len,
             config.output_len,
-            config.downsample_factor,
+            config.downsample,
         )
         max_num_clusters = max([len(r.cluster_ids) for r in recordings])
         model = retinapy.models.MultiClusterModel(
@@ -833,10 +830,7 @@ class MultiClusterDistFieldTGroup(TrainableGroup):
 class DistFieldCnnTGroup(TrainableGroup):
     @staticmethod
     def trainable_label(config):
-        return (
-            f"DistFieldCnn-{config.downsample_factor}"
-            f"ds_{config.input_len}in"
-        )
+        return f"DistFieldCnn-{config.downsample}" f"ds_{config.input_len}in"
 
     @staticmethod
     def create_trainable(recordings, config):
@@ -844,7 +838,7 @@ class DistFieldCnnTGroup(TrainableGroup):
         output_lens = {1984: 200, 992: 100, 3174: 400, 1586: 200}
         model_out_len = output_lens[config.input_len]
         train_ds, val_ds, test_ds = create_distfield_datasets(
-            rec, config.input_len, model_out_len, config.downsample_factor
+            rec, config.input_len, model_out_len, config.downsample
         )
         model = retinapy.models.DistanceFieldCnnModel(
             DIST_CLAMP_MS,
@@ -866,7 +860,7 @@ class LinearNonLinearTGroup(TrainableGroup):
     @staticmethod
     def trainable_label(config):
         return (
-            f"LinearNonLinear-{config.downsample_factor}"
+            f"LinearNonLinear-{config.downsample}"
             f"ds_{config.input_len}in_{config.output_len}out"
         )
 
@@ -876,7 +870,7 @@ class LinearNonLinearTGroup(TrainableGroup):
         num_inputs = IN_CHANNELS * config.input_len
         m = retinapy.models.LinearNonlinear(in_n=num_inputs, out_n=1)
         train_ds, val_ds, test_ds = create_count_datasets(
-            rec, config.input_len, config.output_len, config.downsample_factor
+            rec, config.input_len, config.output_len, config.downsample
         )
         label = LinearNonLinearTGroup.trainable_label(config)
         return LinearNonLinearTrainable(train_ds, val_ds, test_ds, m, label)
@@ -917,27 +911,29 @@ def _train(out_dir):
     logging.info(f"Total: {total_trainables} models to be trained.")
 
     # Load the data.
-    #recordings = mea.load_3brain_recordings(
+    # recordings = mea.load_3brain_recordings(
     #    opt.stimulus_pattern,
     #    opt.stimulus,
     #    opt.response,
-    #)
+    # )
     ## Filter recordings, if requested.
-    #if opt.recording_names is not None:
+    # if opt.recording_names is not None:
     #    recordings = [
     #        r for r in recordings if r.name in set(opt.recording_names)
     #    ]
-    #logging.info(f"Loaded {len(recordings)} recordings, compressed:")
-    #for r in recordings:
+    # logging.info(f"Loaded {len(recordings)} recordings, compressed:")
+    # for r in recordings:
     #    logging.info(f"  {r.name}")
-    recordings = [mea.single_3brain_recording(
-       opt.recording_names[0],
-       mea.load_stimulus_pattern(opt.stimulus_pattern),
-       mea.load_recorded_stimulus(opt.stimulus),
-       mea.load_response(opt.response),
-       #include_clusters={21, 138},
-       #include_clusters={21, },
-    )]
+    recordings = [
+        mea.single_3brain_recording(
+            opt.recording_names[0],
+            mea.load_stimulus_pattern(opt.stimulus_pattern),
+            mea.load_recorded_stimulus(opt.stimulus),
+            mea.load_response(opt.response),
+            # include_clusters={21, 138},
+            # include_clusters={21, },
+        )
+    ]
 
     done_trainables = set()
     for c in all_configs:
