@@ -25,8 +25,9 @@ def _num_snippets(num_timesteps: int, snippet_len: int, stride: int) -> int:
         (num_timesteps - (snippet_len - 1) - 1) / stride + 1
     )
     assert num_snippets1 == num_snippets2, (
-            f'Strided snippet calculation is wrong. {num_snippets1} != '
-            f'{num_snippets2}.')
+        f"Strided snippet calculation is wrong. {num_snippets1} != "
+        f"{num_snippets2}."
+    )
     return num_snippets1
 
 
@@ -133,7 +134,7 @@ class SpikeCountDataset(torch.utils.data.Dataset):
         return X, y
 
 
-class SpikeDistanceFieldDataset(torch.utils.data.Dataset):
+class DistFieldDataset(torch.utils.data.Dataset):
     """
     Dataset producing a snippet (spikes and stimulus) and a spike distance
     field. A portion of the spikes in the snippet are masked. The spike distance
@@ -386,3 +387,31 @@ class LabeledConcatDataset(torch.utils.data.Dataset):
         ), "Sample must be a dictionary in order to add a label."
         sample[self.label_key] = dataset_idx
         return sample
+
+
+class ConcatDistFieldDataset(LabeledConcatDataset):
+    """
+    A concatenation of distfield datasets, one for each recording.
+
+    This class exists to expose some methods like sample_rate() that are both
+    present and consistent among all contained datasets. Using these methods
+    is tedious if using LabeledConcatDataset directly. It's also brittle, as
+    the LabeledConcatDataset can't (but should) act as a drop in replacement
+    for a single DistFieldDataset.
+
+    While we are at it, we can encapsulate the setting of the "rec_id" as the
+    custom label key.
+    """
+
+    def __init__(self, datasets: Iterable[DistFieldDataset]) -> None:
+        super().__init__(datasets, label_key="rec_id")
+        # Check for consistency
+        sample_rate = self.datasets[0].sample_rate
+        for ds in self.datasets:
+            assert ds.sample_rate == sample_rate, (
+                "All datasets must have the same sample rate. Got "
+                f"({sample_rate}) and ({ds.sample_rate})."
+            )
+
+    def sample_rate(self):
+        return self.datasets[0].sample_rate()

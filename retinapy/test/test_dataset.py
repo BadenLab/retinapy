@@ -24,7 +24,7 @@ def exp12_1kHz():
     return rec
 
 
-def test_SpikeDistanceFieldDataset(exp12_1kHz):
+def test_DistFieldDataset(exp12_1kHz):
     # Setup
     snippet_len = 2000
     mask_begin = 1000
@@ -36,7 +36,7 @@ def test_SpikeDistanceFieldDataset(exp12_1kHz):
     # Test
     # 1. The dataset should be created correctly.
     exp12_1kHz_cluster_13 = exp12_1kHz.clusters({13})
-    ds = dataset.SpikeDistanceFieldDataset(
+    ds = dataset.DistFieldDataset(
         exp12_1kHz_cluster_13, snippet_len, mask_begin, mask_end, pad, max_dist
     )
     # 2. The dataset should have the correct length.

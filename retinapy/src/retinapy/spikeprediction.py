@@ -418,7 +418,7 @@ class DistFieldTrainable_(retinapy.train.Trainable):
     def __init__(
         self, train_ds, val_ds, test_ds, model, model_label, eval_lengths=None
     ):
-        super(DistFieldTrainable_, self).__init__(
+        super().__init__(
             train_ds, val_ds, test_ds, model, model_label
         )
         sample_rates_equal = (
@@ -605,7 +605,7 @@ def create_multi_cluster_df_datasets(
         )
         snippet_len = input_len + output_len
         train_val_test_datasets = [
-            retinapy.dataset.SpikeDistanceFieldDataset(
+            retinapy.dataset.DistFieldDataset(
                 r,
                 snippet_len=snippet_len,
                 mask_begin=input_len,
@@ -627,16 +627,9 @@ def create_multi_cluster_df_datasets(
         train_ds.append(train_val_test_datasets[0])
         val_ds.append(train_val_test_datasets[1])
         test_ds.append(train_val_test_datasets[2])
-    rec_key = "rec_id"
-    concat_train_ds = retinapy.dataset.LabeledConcatDataset(
-        train_ds, label_key=rec_key
-    )
-    concat_val_ds = retinapy.dataset.LabeledConcatDataset(
-        val_ds, label_key=rec_key
-    )
-    concat_test_ds = retinapy.dataset.LabeledConcatDataset(
-        test_ds, label_key=rec_key
-    )
+    concat_train_ds = retinapy.dataset.ConcatDistFieldDataset(train_ds)
+    concat_val_ds = retinapy.dataset.ConcatDistFieldDataset(val_ds)
+    concat_test_ds = retinapy.dataset.ConcatDistFieldDataset(test_ds)
     res = (concat_train_ds, concat_val_ds, concat_test_ds)
     return res
 
@@ -651,7 +644,7 @@ def create_distfield_datasets(
     train_val_test_splits = mea.mirror_split(rec, split_ratio=SPLIT_RATIO)
     snippet_len = input_len + output_len
     train_val_test_datasets = [
-        retinapy.dataset.SpikeDistanceFieldDataset(
+        retinapy.dataset.DistFieldDataset(
             r,
             snippet_len=snippet_len,
             mask_begin=input_len,
