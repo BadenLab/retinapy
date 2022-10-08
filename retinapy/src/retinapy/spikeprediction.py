@@ -378,7 +378,147 @@ class LinearNonLinearTrainable(retinapy.train.Trainable):
         return metrics
 
 
-class DistFieldTrainableMC(retinapy.train.Trainable):
+class DistFieldTrainable_(retinapy.train.Trainable):
+    """
+    A base trainable for the distance field models.
+
+    There are quite a few things that are common to all such models, such as:
+        - the conversion from distance field to model output (and vice versa)
+        - the evaluation proceedure
+        - the requirement to wrap properties like sample rate that would
+          otherwise not be contained in one obvious place.
+    """
+
+    eval_lengths_ms: Iterable[int]
+    max_eval_count: int
+
+    """
+    min_dist has duel purpose:
+        a) it represents the fact that a bin that contains a spike means that
+           when viewing the bin as a sample point, the actual spike could have
+           occurred anywhere ± 1/2 the sample period. Thus, for a bin that
+           contains a spike, zero distance is not appropriate—it should be
+           the expected value of the distance, which if a uniform distribution
+           is assumed, then the distance is 1/2.
+        b) it caps the error for a prediction for a bin that contains a spike.
+           When using the log distance as the target, a distance of zero will 
+           give -∞ as a target. So we should choose some minimum distance. 
+           Enter 0.5 as a reasonable minimum given the justification from
+           the previous point.
+
+    TODO: I think that due to the explanation in point a) above, the value
+    of 1/2 should be set by the dataset, and not here. The reason for delaying
+    this now is that quite a bit of changes would need to be made (tests etc.)
+    """
+    MIN_DIST: float = 0.5
+    DEFAULT_EVAL_LENGTHS_MS = [10, 50, 100]
+    DEFAULT_MAX_EVAL_COUNT = int(1e7)
+    DEFAULT_DIST_NORM = 20
+
+    def __init__(
+        self, train_ds, val_ds, test_ds, model, model_label, eval_lengths=None
+    ):
+        super(DistFieldTrainable_, self).__init__(
+            train_ds, val_ds, test_ds, model, model_label
+        )
+        sample_rates_equal = (
+            train_ds.sample_rate == test_ds.sample_rate == val_ds.sample_rate
+        )
+        if not sample_rates_equal:
+            raise ValueError(
+                "Train, validation and test datasets do not have "
+                f"the same sample rate. Got ({train_ds.sample_rate:.5f}, "
+                f"{val_ds.sample_rate:.5f}, {test_ds.sample_rate:.5f})"
+            )
+        if eval_lengths is None:
+            self.eval_lengths_ms = self.DEFAULT_EVAL_LENGTHS_MS
+        else:
+            self.eval_lengths_ms = eval_lengths
+        self.max_eval_count = self.DEFAULT_MAX_EVAL_COUNT
+        self.dist_norm = self.DEFAULT_DIST_NORM
+
+    def eval_bins(self) -> Iterable[int]:
+        res = []
+        for ms in self.eval_lengths_ms:
+            num_bins = max(1, round(ms * (self.sample_rate / 1000)))
+            res.append(num_bins)
+        return res
+
+    @property
+    def sample_period_ms(self):
+        return 1000 / self.sample_rate
+
+    @property
+    def sample_rate(self):
+        sample_rates_equal = (
+            self.train_ds.sample_rate
+            == self.test_ds.sample_rate
+            == self.val_ds.sample_rate
+        )
+        assert sample_rates_equal
+        # We can use any of the datasets.
+        return self.train_ds.sample_rate
+
+    def distfield_to_nn_output(self, distfield):
+        return torch.log((distfield + self.MIN_DIST) / self.dist_norm)
+
+    def nn_output_to_distfield(self, nn_output):
+        return torch.exp(nn_output) * self.dist_norm - self.MIN_DIST
+
+    def quick_infer(self, dist, eval_len):
+        """Quickly infer the number of spikes in the eval region.
+
+        An approximate inference used for evaluation.
+
+        Returns:
+            the number of spikes in the region.
+        """
+        threshold = 0.4
+        res = (dist[:, 0:eval_len] < threshold).sum(dim=1)
+        return res
+
+    def evaluate(self, val_dl):
+        predictions = defaultdict(list)
+        targets = defaultdict(list)
+        loss_meter = retinapy._logging.Meter("loss")
+        for i, sample in enumerate(val_dl):
+            # Don't run out of memory, or take too long.
+            num_so_far = val_dl.batch_size * i
+            if num_so_far > self.max_eval_count:
+                break
+            target_spikes = sample["target_spikes"].float().cuda()
+            batch_len = target_spikes.shape[0]
+            model_output, loss = self.forward(sample)
+            loss_meter.update(loss.item(), batch_len)
+            # Count accuracies
+            for eval_len in self.eval_bins():
+                pred = self.quick_infer(model_output, eval_len=eval_len)
+                y = torch.sum(target_spikes[:, 0:eval_len], dim=1)
+                predictions[eval_len].append(pred)
+                targets[eval_len].append(y)
+
+        metrics = [
+            retinapy._logging.Metric("loss", loss_meter.avg, increasing=False)
+        ]
+        for eval_len in self.eval_bins():
+            p = torch.cat(predictions[eval_len])
+            t = torch.cat(targets[eval_len])
+            acc = (p == t).float().mean().item()
+            pearson_corr = scipy.stats.pearsonr(
+                p.cpu().numpy(), t.cpu().numpy()
+            )[0]
+            metrics.append(
+                retinapy._logging.Metric(f"accuracy-{eval_len}_bins", acc)
+            )
+            metrics.append(
+                retinapy._logging.Metric(
+                    f"pearson_corr-{eval_len}_bins", pearson_corr
+                )
+            )
+        return metrics
+
+
+class DistFieldTrainableMC(DistFieldTrainable_):
     def __init__(
         self, train_ds, val_ds, test_ds, model, model_label, eval_lengths
     ):
@@ -386,17 +526,18 @@ class DistFieldTrainableMC(retinapy.train.Trainable):
 
         This is a minimal extension of the DistFieldTrainable.
         """
-        super(DistFieldTrainableMC, self).__init__(
-            train_ds, val_ds, test_ds, model, model_label
+        super().__init__(
+            train_ds, val_ds, test_ds, model, model_label, eval_lengths
         )
         self.dist_loss_fn = retinapy.models.dist_loss
-        self.eval_lengths = eval_lengths
-        self.min_dist = 0.5
+        # Network output should ideally have mean,sd = (0, 1). Network output
+        # 20*exp([-3, 3])  = [1.0, 402], which is a pretty good range, with
+        # 20 being the mid point. Is this too low?
         self.dist_norm = 20
         # Network output should ideally have mean,sd = (0, 1). Network output
         # 20*exp([-3, 3])  = [1.0, 402], which is a pretty good range, with
         # 20 being the mid point. Is this too low?
-        self.max_pearson_len = 1e6
+        self.max_eval_count = int(1e6)
 
     def loss(self, m_dist, z_mu, z_lorvar, target):
         # Scale to get roughly in the ballpark of 1.
@@ -417,161 +558,8 @@ class DistFieldTrainableMC(retinapy.train.Trainable):
         loss = self.loss(m_dist, z_mu, z_logvar, target=y)
         return m_dist, loss
 
-    def quick_infer(self, dist, eval_len):
-        """Quickly infer the number of spikes in the eval region.
 
-        An approximate inference used for evaluation.
-
-        Returns:
-            the number of spikes in the region.
-        """
-        threshold = 0.4
-        res = (dist[:, 0:eval_len] < threshold).sum(dim=1)
-        return res
-
-    def distfield_to_nn_output(self, distfield):
-        return torch.log((distfield + self.min_dist) / self.dist_norm)
-
-    def nn_output_to_distfield(self, nn_output):
-        return torch.exp(nn_output) * self.dist_norm - self.min_dist
-
-    def evaluate(self, val_dl):
-        predictions = defaultdict(list)
-        targets = defaultdict(list)
-        loss_meter = retinapy._logging.Meter("loss")
-        for i, sample in enumerate(val_dl):
-            # Don't run out of memory, or take too long.
-            num_so_far = val_dl.batch_size * i
-            if num_so_far > self.max_pearson_len:
-                break
-            target_spikes = sample["target_spikes"].float().cuda()
-            batch_len = target_spikes.shape[0]
-            model_output, loss = self.forward(sample)
-            loss_meter.update(loss.item(), batch_len)
-            # Count accuracies
-            for eval_len in self.eval_lengths:
-                pred = self.quick_infer(model_output, eval_len=eval_len)
-                y = torch.sum(target_spikes[:, 0:eval_len], dim=1)
-                predictions[eval_len].append(pred)
-                targets[eval_len].append(y)
-
-        metrics = [
-            retinapy._logging.Metric("loss", loss_meter.avg, increasing=False)
-        ]
-        for eval_len in self.eval_lengths:
-            p = torch.cat(predictions[eval_len])
-            t = torch.cat(targets[eval_len])
-            acc = (p == t).float().mean().item()
-            pearson_corr = scipy.stats.pearsonr(
-                p.cpu().numpy(), t.cpu().numpy()
-            )[0]
-            metrics.append(
-                retinapy._logging.Metric(f"accuracy-{eval_len}_bins", acc)
-            )
-            metrics.append(
-                retinapy._logging.Metric(
-                    f"pearson_corr-{eval_len}_bins", pearson_corr
-                )
-            )
-        return metrics
-
-
-class DistFieldTrainable_(retinapy.train.Trainable):
-
-    eval_ms: Iterable[int]
-
-    DEFAULT_EVAL_MS = [10, 50, 100]
-
-    def __init__(self, train_ds, val_ds, test_ds, model, model_label):
-        super(DistFieldTrainable_, self).__init__(
-            train_ds, val_ds, test_ds, model, model_label
-        )
-        sample_rates_equal = (
-            train_ds.sample_rate == test_ds.sample_rate == val_ds.sample_rate
-        )
-        if not sample_rates_equal:
-            raise ValueError(
-                "Train, validation and test datasets do not have "
-                f"the same sample rate. Got ({train_ds.sample_rate:.5f}, "
-                f"{val_ds.sample_rate:.5f}, {test_ds.sample_rate:.5f})"
-            )
-        self.eval_ms = self.DEFAULT_EVAL_MS
-        self.max_eval_sequence_len = 1e10
-
-    def eval_ms_to_bins(self, eval_ms: Iterable[float]) -> Iterable[int]:
-        res = []
-        for ms in eval_ms:
-            num_bins = max(1, round(eval_ms * (self.sample_rate / 1000)))
-            res.append(num_bins)
-        return res
-
-    @property
-    def sample_period_ms(self):
-        return 1000 / self.sample_rate
-
-    @property
-    def sample_rate(self):
-        sample_rates_equal = (
-            self.train_ds.sample_rate
-            == self.test_ds.sample_rate
-            == self.val_ds.sample_rate
-        )
-        assert sample_rates_equal
-        # We can use any of the datasets.
-        return self.train_ds.sample_rate
-
-    def quick_infer(self, dist, eval_len):
-        """Quickly infer the number of spikes in the eval region.
-
-        An approximate inference used for evaluation.
-
-        Returns:
-            the number of spikes in the region.
-        """
-        threshold = 0.4
-        res = (dist[:, 0:eval_len] < threshold).sum(dim=1)
-        return res
-
-    def evaluate(self, val_dl):
-        predictions = defaultdict(list)
-        targets = defaultdict(list)
-        loss_meter = retinapy._logging.Meter("loss")
-        eval_lengths = sorted(self.eval_ms_to_bins(self.eval_ms))
-        for i, sample in enumerate(val_dl):
-            # Don't run out of memory.
-            if len(predictions[eval_lengths[0]]) > self.max_eval_sequence_len:
-                break
-            target_spikes = sample["target_spikes"].float().cuda()
-            batch_len = target_spikes.shape[0]
-            model_output, loss = self.forward(sample)
-            loss_meter.update(loss.item(), batch_len)
-            # Count accuracies
-            for eval_len in eval_lengths:
-                pred = self.quick_infer(model_output, eval_len=eval_len)
-                y = torch.sum(target_spikes[:, 0:eval_len], dim=1)
-                predictions[eval_len].append(pred)
-                targets[eval_len].append(y)
-
-        metrics = [
-            retinapy._logging.Metric("loss", loss_meter.avg, increasing=False)
-        ]
-        for eval_len in eval_lengths:
-            p = torch.cat(predictions[eval_len])
-            t = torch.cat(targets[eval_len])
-            acc = (p == t).float().mean().item()
-            pearson_corr = scipy.stats.pearsonr(p.cpu(), t.cpu())[0]
-            metrics.append(
-                retinapy._logging.Metric(f"accuracy-{eval_len}_bins", acc)
-            )
-            metrics.append(
-                retinapy._logging.Metric(
-                    f"pearson_corr-{eval_len}_bins", pearson_corr
-                )
-            )
-        return metrics
-
-
-class DistFieldTrainable(retinapy.train.Trainable):
+class DistFieldTrainable(DistFieldTrainable_):
     def __init__(
         self, train_ds, val_ds, test_ds, model, model_label, eval_lengths
     ):
@@ -584,17 +572,10 @@ class DistFieldTrainable(retinapy.train.Trainable):
         region. So there is not a 1-1 between distance field length and the
         number of bins over which we are counting spikes.
         """
-        super(DistFieldTrainable, self).__init__(
-            train_ds, val_ds, test_ds, model, model_label
+        super().__init__(
+            train_ds, val_ds, test_ds, model, model_label, eval_lengths
         )
         self.loss_fn = retinapy.models.dist_loss
-        self.eval_lengths = eval_lengths
-        self.min_dist = 0.5
-        self.dist_norm = 20
-        self.output_len = 400
-        # Network output should ideally have mean,sd = (0, 1). Network output
-        # 20*exp([-3, 3])  = [1.0, 402], which is a pretty good range, with
-        # 20 being the mid point. Is this too low?
 
     def forward(self, sample):
         masked_snippet = sample["snippet"].float().cuda()
@@ -605,58 +586,6 @@ class DistFieldTrainable(retinapy.train.Trainable):
         y = self.distfield_to_nn_output(dist)
         loss = self.loss_fn(model_output, target=y)
         return model_output, loss
-
-    def quick_infer(self, dist, eval_len):
-        """Quickly infer the number of spikes in the eval region.
-
-        An approximate inference used for evaluation.
-
-        Returns:
-            the number of spikes in the region.
-        """
-        threshold = 0.4
-        res = (dist[:, 0:eval_len] < threshold).sum(dim=1)
-        return res
-
-    def distfield_to_nn_output(self, distfield):
-        return torch.log((distfield + self.min_dist) / self.dist_norm)
-
-    def nn_output_to_distfield(self, nn_output):
-        return torch.exp(nn_output) * self.dist_norm - self.min_dist
-
-    def evaluate(self, val_dl):
-        predictions = defaultdict(list)
-        targets = defaultdict(list)
-        loss_meter = retinapy._logging.Meter("loss")
-        for sample in val_dl:
-            target_spikes = sample["target_spikes"].float().cuda()
-            batch_len = target_spikes.shape[0]
-            model_output, loss = self.forward(sample)
-            loss_meter.update(loss.item(), batch_len)
-            # Count accuracies
-            for eval_len in self.eval_lengths:
-                pred = self.quick_infer(model_output, eval_len=eval_len)
-                y = torch.sum(target_spikes[:, 0:eval_len], dim=1)
-                predictions[eval_len].append(pred)
-                targets[eval_len].append(y)
-
-        metrics = [
-            retinapy._logging.Metric("loss", loss_meter.avg, increasing=False)
-        ]
-        for eval_len in self.eval_lengths:
-            p = torch.cat(predictions[eval_len])
-            t = torch.cat(targets[eval_len])
-            acc = (p == t).float().mean().item()
-            pearson_corr = scipy.stats.pearsonr(p.cpu(), t.cpu())[0]
-            metrics.append(
-                retinapy._logging.Metric(f"accuracy-{eval_len}_bins", acc)
-            )
-            metrics.append(
-                retinapy._logging.Metric(
-                    f"pearson_corr-{eval_len}_bins", pearson_corr
-                )
-            )
-        return metrics
 
 
 def create_multi_cluster_df_datasets(
