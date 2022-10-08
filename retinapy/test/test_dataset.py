@@ -43,13 +43,18 @@ def test_SpikeDistanceFieldDataset(exp12_1kHz):
     assert len(ds) == len(exp12_1kHz) - snippet_len  - pad + 1
 
     # 3. The dataset should return the correct snippet and distance fields.
-    masked_snippet, target_spikes, dist_field = ds[0]
+    sample = ds[0]
+    masked_snippet = sample['snippet']
+    target_spikes = sample['target_spikes']
+    dist_field = sample['dist']
     # 3.1. The shapes should be correct.
     assert masked_snippet.shape == (mea.NUM_STIMULUS_LEDS + 1, snippet_len)
     assert target_spikes.shape == mask_shape
     assert dist_field.shape == mask_shape
-    # 3.2 The target spikes should be an int array, with mostly zeros.
-    assert target_spikes.dtype == int
+    # 3.2 The target spikes should be float array, with mostly zeros.
+    # Note: this was changed from int. float resulted in higher examples/sec
+    # when training.
+    assert target_spikes.dtype == float
     known_spike_count = 10
     assert np.sum(target_spikes) == known_spike_count
     # 3.3 The distance fields should be zero where there are spikes, and 

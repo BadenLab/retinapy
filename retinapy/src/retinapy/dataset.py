@@ -3,7 +3,31 @@ import retinapy.spikedistancefield as sdf
 import numpy as np
 import torch
 import bisect
+import math
 from typing import Tuple, Optional, List, Iterable
+
+
+def _num_snippets(num_timesteps: int, snippet_len: int, stride: int) -> int:
+    """
+    Returns the number of snippets that can be extracted from a recording with
+    the given number of timesteps, snippet length, and stride.
+    """
+    # The most likely place for insidious bugs to hide is here. So try two
+    # ways.
+    # 1. Find the last strided timestep, then divide by stride.
+    last_nonstrided = num_timesteps - snippet_len
+    last_strided_timestep = last_nonstrided - (last_nonstrided % stride)
+    num_snippets1 = last_strided_timestep // stride + 1
+    # 2. Same deal, but mindlessly copying the formula from Pytorch docs.
+    # https://pytorch.org/docs/stable/generated/torch.nn.Conv1d.html
+    # Padding is 0, and dilation is 1.
+    num_snippets2 = math.floor(
+        (num_timesteps - (snippet_len - 1) - 1) / stride + 1
+    )
+    assert num_snippets1 == num_snippets2, (
+            f'Strided snippet calculation is wrong. {num_snippets1} != '
+            f'{num_snippets2}.')
+    return num_snippets1
 
 
 class SnippetDataset(torch.utils.data.Dataset):
@@ -15,21 +39,21 @@ class SnippetDataset(torch.utils.data.Dataset):
                 f"Snippet length ({snippet_len}) is larger than "
                 f"the recording length ({len(recording)})."
             )
-        self.snippet_len = snippet_len
         self.recording = recording
+        self.snippet_len = snippet_len
+        self.stride = stride
         self.num_clusters = len(recording.cluster_ids)
         self.num_timesteps = len(recording) - snippet_len + 1
         assert (
             self.num_timesteps > 0
         ), "Snippet length is longer than the recording."
-        self.stride = stride
-        self.num_strided_timesteps = self.num_timesteps // stride
+        self.num_strided_timesteps = _num_snippets(
+            len(recording), snippet_len, stride
+        )
 
     def __len__(self):
         """
         Calculates the number of samples in the dataset.
-
-        There will be one sample for every timestep in the recording.
         """
         return self.num_strided_timesteps * self.num_clusters
 
@@ -46,12 +70,9 @@ class SnippetDataset(torch.utils.data.Dataset):
         cluster_idx = index // self.num_strided_timesteps
         return timestep_idx, cluster_idx
 
-
     def __getitem__(self, idx):
         """
         Returns the snippet at the given index.
-
-        Index is one-to-one with the timesteps in the recording.
         """
         start_time_idx, cluster_idx = self._decode_index(idx)
         end_time_idx = start_time_idx + self.snippet_len
