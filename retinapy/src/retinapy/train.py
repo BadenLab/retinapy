@@ -264,7 +264,7 @@ def train(
     model.train()
     model.cuda()
 
-    optimizer = torch.optim.Adam(
+    optimizer = torch.optim.AdamW(
         model.parameters(), lr=lr, weight_decay=weight_decay
     )
 
