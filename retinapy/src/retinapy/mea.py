@@ -22,15 +22,21 @@ IDS_FILE_PATTERN = "{part}_ids.npy"
 SNIPPET_FILE_PATTERN = "{part}_snippets.npy"
 RNG_SEED = 123
 
-# Named tuple for stimuli.
-Stimulus = namedtuple("Stimulus", ["name", "display_hex", "import_name"])
+Stimulus = namedtuple(
+    "Stimulus", ["name", "wavelength", "channel", "display_hex", "import_name"]
+)
 stimuli = [
-    Stimulus("red", "#ff0a0a", "/Red_Noise"),
-    Stimulus("green", "#0aff0a", "/Green_Noise"),
-    Stimulus("blue", "#0a0aff", "/Blue_Noise"),
-    Stimulus("uv", "#303030", "/UV_Noise"),
+    Stimulus("red", 680, 0, "#FE7C7C", "/Red_Noise"),
+    Stimulus("green", 530, 1, "#8AFE7C", "/Green_Noise"),
+    Stimulus("blue", 470, 2, "#7CFCFE", "/Blue_Noise"),
+    Stimulus("uv", 400, 3, "#7C86FE", "/UV_Noise"),
 ]
-stimulus_names = tuple(s.name for s in stimuli)
+_stimulus_map = {s.name: s for s in stimuli}
+
+
+def stimulus_by_name(name: str) -> Stimulus:
+    """Return the stimulus info for the stimulus with the given name."""
+    return _stimulus_map[name]
 
 
 class CompressedSpikeRecording:
@@ -505,8 +511,10 @@ def single_3brain_recording(
 
 
 def decompress_recordings(
-        recordings: List[CompressedSpikeRecording], downsample : int = 1,
-        num_workers = 5) -> List[SpikeRecording]:
+    recordings: List[CompressedSpikeRecording],
+    downsample: int = 1,
+    num_workers=5,
+) -> List[SpikeRecording]:
     """
     Decompress multiple recordings.
     """
@@ -515,7 +523,9 @@ def decompress_recordings(
     def _decompress(rec):
         return decompress_recording(rec, downsample)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=num_workers
+    ) as executor:
         res = list(executor.map(_decompress, recordings))
         executor.shutdown(wait=True)
     return res
