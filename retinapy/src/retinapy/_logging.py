@@ -17,6 +17,105 @@ import torch.utils.tensorboard as tb
 import json
 
 
+"""
+Logging
+=======
+
+The logging functionality in this module handles things like:
+
+    - where to log
+    - using Python's logging module
+    - timing things 
+    - measuring things with numbers
+        - increasing vs. decreasing
+        - accumulated calculation vs. one-off
+        - best-so-far tracking *
+    - saving Pytorch models *
+    - logging training/evaluation data *
+
+The stars are placed next to the categories that are training-loop specific.
+If a logging routine needs to know what epoch it is, then it's very much
+inseparable from the training-loop. I'm pointing this out, as it's conceivable
+that these two categories of logging will be separated into different modules
+at some point; the more general logging functions might be used for other
+projects.
+
+A lot more can be said about the training-loop logging.
+
+tl;dr 
+-----
+Trainables return a dictionary like {"metrics": .., "images": ..., "figures": ...,}
+
+Training-loop logging
+=====================
+Logging for a training-loop is a great source of edge cases, thwarting
+attempts to create separation between parts of the training apparatus. 
+If you blur your eyes a bit, the concerns of different parts of the training 
+aparatus form a top-down gradient. At the top, the mundane but important things
+like where to store data is handled. In the middle, we have the training-loop
+management which knows how to setup and run the endless loop over the data
+to train and periodiacally evaluate a model, yet it doesn't care at all about
+what model it is actually training. At the very bottom is the actual Pytorch
+model. It has been given quite a simple life thanks to the work of the 
+Trainable—the great encapsulator of entropy—that knows how to pull a sample from
+the dataset and feed it to the model. If you want to re-use a PyTorch Dataset
+for multiple models, you really do need something in the middle than
+massages the data into each model. But that is not the only work of the 
+Trainable—the Trainable is the only one who has enough context to report on how 
+good or bad the training is actually progressing, so it gets the task of
+gathering up the data to be logged. And this is where logging comes in to make 
+things difficult. The Trainable should be free to log whatever it wants, from
+metrics like loss, to images and figures and weight snapshots. But all of
+this data cannot be handed back to the training-loop without being specific 
+about what each piece of data is, as different types of data need to be 
+handled differently. For example, the TensorBoard API requires datatypes to
+be separated, as the API calls are different for different types, for example,
+SummaryWriter.add_scalar() vs. SummaryWriter.add_histogram(). The W&B API takes
+a different approach and accepts data as a dictionary where the values are
+object instances of wandb classes, each data type using a different class.
+
+The consequence of Tensorboard's approach is that you need to attach some sort
+of metadata to your data that will allow you to create some big if-else block 
+that routes data to the suitable Tensorboard function call. Alternatively,
+you could call the Tensorboard API directly in the Trainable. This latter 
+approach feels like it would be frustrating, as suddenly, your Trainable 
+object needs to know about the training-loop (what step etc). What if you
+want to run the evaluation outside of a training loop, say at test time? So
+many little details to handle. So your choice with tensorboard is to either
+log data from very deep in your stack, or pass around some metadata that allows
+you to build a big if-else block at some point.
+
+In comparison, if one imagined committing fully to W&B, the Trainable
+can create the wandb objects directly and return a data dictionary that doesn't 
+need to be inspected at any point before handing off to the wandb API. This
+is very seductive. W&B has nicely observed that the decision of what type
+of data to be logged is made when you collect the data, and shouldn't need to
+be made again when you go to actually call your logging utility. You can
+view the set of wandb datatypes here: 
+
+    https://github.com/wandb/wandb/blob/latest/wandb/__init__.py
+
+What to actually do
+-------------------
+I don't want to stop using Tensorboard, I don't want to call tensorboard 
+logging calls directly in the Trainable, and I want the option of using 
+alternative logging tools like W&B in the future. So it seems like there
+will be a if-else block for data routing. What is left is to choose what is the
+form of metadata this is switched upon. We could go with classes, like how
+wandb seems to do it, or we could go with just strings like "metrics", "images", 
+etc. I think this latter approach is nicer; I don't want to have to create 
+new classes just for the sake of being distinguished in some if-else chain.
+Having said that, classes will probably wrap most of the data types anyway,
+for example, numeric data is already wrapped in the Metric class which 
+records the increasing or decreasing nature of a metric.
+
+The Tensorboard and wandb API documentation homepages:
+
+    https://pytorch.org/docs/stable/tensorboard.html
+    https://docs.wandb.ai/
+"""
+
+
 _logger = logging.getLogger(__name__)
 
 
@@ -276,7 +375,7 @@ class MetricTracker:
     BEST_FILENAME = "best_metrics.json"
 
     # Instance variables
-    best_metrics : Dict[str, Number]
+    best_metrics: Dict[str, Number]
     best_metric_epochs = Dict[str, int]
     _best_this_epoch = Sequence[Metric]
     history = Dict[int, Dict[str, Number]]
@@ -330,8 +429,8 @@ class MetricTracker:
                     assert metric.is_better(current_best)
                     gt_lt = ">" if metric.increasing else "<"
                     _logger.info(
-                        f"Improved metric ({metric.name}): ".ljust(40) + 
-                        f"{metric.value:.5f} {gt_lt} {current_best:.5f} " 
+                        f"Improved metric ({metric.name}): ".ljust(40)
+                        + f"{metric.value:.5f} {gt_lt} {current_best:.5f} "
                         f"(epoch {epoch} {gt_lt} "
                         f"{self.best_metric_epochs[metric.name]})"
                     )
@@ -357,7 +456,6 @@ class MetricTracker:
         _logger.info("Best metrics:")
         _logger.info(json.dumps(self.best_metrics, indent=2))
 
-
     def improved_metrics(self) -> Sequence[Metric]:
         """
         Returns a list of metrics that have improved since the last update.
@@ -381,6 +479,10 @@ class TbLogger(object):
 
     def __init__(self, tensorboard_dir):
         self.writer = tb.SummaryWriter(str(tensorboard_dir))
+
+    def log_mixed_data(self, n_iter, data, log_group):
+        for k, v in data.items():
+            pass
 
     def log_metrics(self, n_iter, metrics, log_group):
         for metric in metrics:

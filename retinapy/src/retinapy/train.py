@@ -12,6 +12,12 @@ import torch
 
 _logger = logging.getLogger(__name__)
 
+"""
+Here we take part in the rite of of passage for a deep learning project by
+yet again reinventing the training loop architecture. No one wants their 
+project stitched together with the callbacks of some soon to be abandonded or 
+rewritten DL framework.
+"""
 
 class Trainable:
     """Encapsulates a dataset, model input-output and loss function.
