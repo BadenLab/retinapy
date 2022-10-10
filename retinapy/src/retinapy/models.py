@@ -398,8 +398,7 @@ class MultiClusterModel(nn.Module):
     def encode(self, rec_id, cluster_id):
         id_ = rec_id * self.num_clusters + cluster_id
         z, z_mu, z_logvar = self.vae(id_)
-        #return z, z_mu, z_logvar # TODO: temporary.
-        return z_mu, z_mu, z_logvar
+        return z, z_mu, z_logvar 
 
     def forward(self, snippet, rec_id, cluster_id):
         x = self.layer0(snippet)

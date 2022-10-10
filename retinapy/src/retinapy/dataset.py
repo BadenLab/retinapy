@@ -198,6 +198,10 @@ class DistFieldDataset(torch.utils.data.Dataset):
     def sample_rate(self):
         return self.recording.sample_rate
 
+    @property
+    def stride(self):
+        return self.ds.stride
+
     def _augment_stimulus(self, stimulus):
         """
         Augment a stimulus portion of a sample.
@@ -415,5 +419,10 @@ class ConcatDistFieldDataset(LabeledConcatDataset):
                 f"({sample_rate}) and ({ds.sample_rate})."
             )
 
+    @property
     def sample_rate(self):
-        return self.datasets[0].sample_rate()
+        return self.datasets[0].sample_rate
+
+    @property
+    def stride(self):
+        return self.datasets[0].stride
