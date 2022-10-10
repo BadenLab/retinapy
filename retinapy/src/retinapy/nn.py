@@ -103,25 +103,6 @@ class Decoder1dBlock(nn.Module):
         return x
 
 
-class SEModule(nn.Module):
-    def __init__(self, n_channels, reduction=1):
-        super().__init__()
-        n_mid = n_channels // reduction
-        self.fc1 = nn.Conv1d(n_channels, n_mid, kernel_size=1)
-        self.relu = nn.ReLU(inplace=True)
-        self.fc2 = nn.Conv1d(n_mid, n_channels, kernel_size=1)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        module_input = x
-        x = x.mean((2,), keepdim=True)
-        x = self.fc1(x)
-        x = self.relu(x)
-        x = self.fc2(x)
-        x = self.sigmoid(x)
-        return module_input * x
-
-
 class ResBlock1d(nn.Module):
     """A residual block with 1d convolutions.
 
@@ -414,6 +395,22 @@ class Conv1dWarehouse(nn.Module):
         return weights_W, weights_b
 
 
+class LayerNorm1d(nn.LayerNorm):
+    """LayerNorm for channels of '2D' spatial NCHW tensors"""
+
+    def __init__(self, num_channels, eps=1e-6, affine=True):
+        super().__init__(num_channels, eps=eps, elementwise_affine=affine)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.layer_norm(
+            x.permute(0, 2, 1),
+            self.normalized_shape,
+            self.weight,
+            self.bias,
+            self.eps,
+        ).permute(0, 2, 1)
+
+
 class ResBlock1d_F(nn.Module):
     """Almost functional residual block.
 
@@ -437,30 +434,36 @@ class ResBlock1d_F(nn.Module):
         self.stride = 2 if self.downsample else 1
 
         self.shortcut = create_shortcut(in_n, out_n, stride=self.stride)
-        self.ln2 = nn.LayerNorm(out_n)
-        self.ln3 = nn.LayerNorm(out_n)
+        self.ln2 = create_batch_norm(mid_n)  # LayerNorm1d(mid_n)
+        self.ln3 = create_batch_norm(out_n)  # LayerNorm1d(out_n)
 
     def num_channels(self):
         return self.out_n + self.mid_n * 2
 
     def forward(self, x, all_W, all_b, from_idx):
         batch_size = x.shape[0]
-        W1 = all_W[:, from_idx : from_idx + self.mid_n].view(
-            batch_size, self.mid_n, self.kernel_size
-        ).contiguous()
+        W1 = (
+            all_W[:, from_idx : from_idx + self.mid_n]
+            .view(batch_size, self.mid_n, self.kernel_size)
+            .contiguous()
+        )
         # Only use a subset of the full available layer.
-        #W1 = W1[:, :, : self.in_n, :].contiguous()
+        # W1 = W1[:, :, : self.in_n, :].contiguous()
         b1 = all_b[:, from_idx : from_idx + self.mid_n].view(batch_size, -1, 1)
         from_idx += self.mid_n
-        W2 = all_W[:, from_idx : from_idx + self.mid_n].view(
-            batch_size, self.mid_n, self.kernel_size
-        ).contiguous()
-        #W2 = W2[:, :, : self.mid_n, :]
+        W2 = (
+            all_W[:, from_idx : from_idx + self.mid_n]
+            .view(batch_size, self.mid_n, self.kernel_size)
+            .contiguous()
+        )
+        # W2 = W2[:, :, : self.mid_n, :]
         from_idx += self.mid_n
-        W3 = all_W[:, from_idx : from_idx + self.out_n].view(
-            batch_size, self.out_n, self.kernel_size
-        ).contiguous()
-        #W3 = W3[:, :, : self.mid_n, :]
+        W3 = (
+            all_W[:, from_idx : from_idx + self.out_n]
+            .view(batch_size, self.out_n, self.kernel_size)
+            .contiguous()
+        )
+        # W3 = W3[:, :, : self.mid_n, :]
         from_idx += self.out_n
         x = self._forward(x, W1, b1, W2, W3)
         return x, from_idx
@@ -476,14 +479,22 @@ class ResBlock1d_F(nn.Module):
 
     def batch_unique_conv(self, x, W, stride=1):
         batch_size = x.shape[0]
-        W = W.view(-1, self.kernel_size)
+        W = W.view(-1, 1, self.kernel_size)
         num_out_channels = W.shape[0] // batch_size
+        num_in_channels = x.shape[1]
         assert W.shape[0] % batch_size == 0
-        #W = torch.reshape(W, shape=(-1, x.shape[1], self.kernel_size))
+        # W = torch.reshape(W, shape=(-1, x.shape[1], self.kernel_size))
         x_flat = x.view(1, -1, x.shape[-1])
         x_flat = F.pad(x_flat, (self.kernel_size // 2, self.kernel_size // 2))
-        x = F.conv1d(x_flat, W, bias=None, padding="valid", stride=stride, 
-                     groups=batch_size*num_out_channels)
+        x = F.conv1d(
+            x_flat,
+            W,
+            bias=None,
+            padding="valid",
+            stride=stride,
+            # Not sure about this!
+            groups=batch_size * num_in_channels,
+        )
         x = x.view(batch_size, num_out_channels, x.shape[-1])
         return x
 
