@@ -6,6 +6,7 @@ from typing import Optional
 import retinapy
 import retinapy.dataset
 import retinapy.mea as mea
+import retinapy.spikeprediction as sp
 
 """
 This module is starting out as somewhere to create the most commonly figures 
@@ -289,6 +290,7 @@ def distfield_model_in_out(
     model_out: np.ndarray,
     start_ms=0,
     bin_duration_ms=1.0,
+    cluster_label=None,
 ):
     """A figure to view the inputs and outputs of a distfield model.
 
@@ -355,8 +357,9 @@ def distfield_model_in_out(
         col=1,
     )
     fig.update_yaxes(
-        {"tickmode": "array", "tickvals": [-5, 0, 5], "fixedrange": True}, 
-        row=2, col=1
+        {"tickmode": "array", "tickvals": [-5, 0, 5], "fixedrange": True},
+        row=2,
+        col=1,
     )
 
     # 3. The model output distance field and the target (actual).
@@ -421,13 +424,17 @@ def distfield_model_in_out(
 
     # Set a default layout.
     fig.update_layout(default_fig_layout())
+    # Create title
+    main_title_str = "Distfield model input-output"
+    if cluster_label is not None:
+        main_title_str += f" ({cluster_label})"
+    title = create_title(main_title_str,
+        "Output region is highlight blue. Spikes are red v-lines.",
+    )
     fig.update_layout(
         {
             "title": {
-                "text": create_title(
-                    "Distfield model input-output",
-                    "Output region is highlight blue. Spikes are red v-lines.",
-                ),
+                "text": title
             },
             "margin": {"t": 70},
             # The title and xaxis label fit within the margin, so it needs

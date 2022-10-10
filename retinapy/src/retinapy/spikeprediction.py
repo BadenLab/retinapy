@@ -10,6 +10,7 @@ import yaml
 import retinapy
 import retinapy._logging
 import retinapy.dataset
+import retinapy.vis
 import retinapy.mea as mea
 import retinapy.models
 import retinapy.train
@@ -418,9 +419,7 @@ class DistFieldTrainable_(retinapy.train.Trainable):
     def __init__(
         self, train_ds, val_ds, test_ds, model, model_label, eval_lengths=None
     ):
-        super().__init__(
-            train_ds, val_ds, test_ds, model, model_label
-        )
+        super().__init__(train_ds, val_ds, test_ds, model, model_label)
         sample_rates_equal = (
             train_ds.sample_rate == test_ds.sample_rate == val_ds.sample_rate
         )
@@ -436,6 +435,7 @@ class DistFieldTrainable_(retinapy.train.Trainable):
             self.eval_lengths_ms = eval_lengths
         self.max_eval_count = self.DEFAULT_MAX_EVAL_COUNT
         self.dist_norm = self.DEFAULT_DIST_NORM
+        self.num_plots = 16
 
     def eval_bins(self) -> Iterable[int]:
         res = []
@@ -481,6 +481,7 @@ class DistFieldTrainable_(retinapy.train.Trainable):
         predictions = defaultdict(list)
         targets = defaultdict(list)
         loss_meter = retinapy._logging.Meter("loss")
+        plotly_figs = []
         for i, sample in enumerate(val_dl):
             # Don't run out of memory, or take too long.
             num_so_far = val_dl.batch_size * i
@@ -496,6 +497,13 @@ class DistFieldTrainable_(retinapy.train.Trainable):
                 y = torch.sum(target_spikes[:, 0:eval_len], dim=1)
                 predictions[eval_len].append(pred)
                 targets[eval_len].append(y)
+            # Plot some example input-outputs
+            if len(plotly_figs) < self.num_plots:
+                # Plot the first batch element.
+                idx = 0
+                plotly_figs.append(
+                    self.input_output_fig(sample, model_output, idx)
+                )
 
         metrics = [
             retinapy._logging.Metric("loss", loss_meter.avg, increasing=False)
@@ -515,7 +523,32 @@ class DistFieldTrainable_(retinapy.train.Trainable):
                     f"pearson_corr-{eval_len}_bins", pearson_corr
                 )
             )
-        return metrics
+        results = {
+            "metrics": metrics,
+            "plotly": retinapy._logging.LogData(
+                "input-output-fig", plotly_figs
+            ),
+        }
+        return results
+
+    def input_output_fig(self, sample, model_out, idx):
+        target_dist=self.distfield_to_nn_output(sample["dist"][idx])
+        fig = retinapy.vis.distfield_model_in_out(
+            # Stimulus takes up all channels except the last.
+            stimulus=sample["snippet"][idx][0:-1].cpu().numpy(),
+            in_spikes=sample["snippet"][idx][-1].cpu().numpy(),
+            target_dist=target_dist.cpu().numpy(),
+            model_out=model_out[idx].cpu().numpy(),
+            start_ms=0,
+            bin_duration_ms=self.sample_period_ms,
+            cluster_label=(
+                f"rec idx: {sample['rec_id'][idx]},"
+                f"cluster idx: {sample['cluster_id'][idx]}"
+            ),
+        )
+        # The legend takes up a lot of space, so disable it.
+        fig.update_layout(showlegend=False)
+        return fig
 
 
 class DistFieldTrainableMC(DistFieldTrainable_):
@@ -537,7 +570,7 @@ class DistFieldTrainableMC(DistFieldTrainable_):
         # Network output should ideally have mean,sd = (0, 1). Network output
         # 20*exp([-3, 3])  = [1.0, 402], which is a pretty good range, with
         # 20 being the mid point. Is this too low?
-        self.max_eval_count = int(1e6)
+        self.max_eval_count = int(1e5)
 
     def loss(self, m_dist, z_mu, z_lorvar, target):
         # Scale to get roughly in the ballpark of 1.

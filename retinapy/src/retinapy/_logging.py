@@ -1,5 +1,6 @@
-from collections import namedtuple
-import functools
+from collections import defaultdict
+import io
+import json
 import logging
 import logging.handlers
 import math
@@ -7,14 +8,16 @@ from numbers import Number
 import pathlib
 import sys
 import time
-from typing import Dict, Optional, Sequence, Union
-from collections import defaultdict
+from typing import Dict, Optional, Sequence, Union, Any
+import collections.abc
 
-import retinapy.models
+import numpy as np
 import pandas as pd
+import retinapy.models
 import torch
+import PIL
+import PIL.Image
 import torch.utils.tensorboard as tb
-import json
 
 
 """
@@ -94,6 +97,18 @@ be made again when you go to actually call your logging utility. You can
 view the set of wandb datatypes here: 
 
     https://github.com/wandb/wandb/blob/latest/wandb/__init__.py
+
+Another interesting file is the one below, which contains the `WBValue` class
+definition. The `WBValue` class is the abstract parent class for anything 
+that can be logged with W&B api. It pressages some of the abstractions one 
+might end up having to make.
+
+https://github.com/wandb/wandb/blob/d622ee37b232e54addcd48e9f92d9198a3e2790b/wandb/sdk/data_types/base_types/wb_value.py#L56
+
+Another class, `Media` shows how the `WBValue` parent class separates as a tree
+into different types of data formats.
+
+https://github.com/wandb/wandb/blob/d622ee37b232e54addcd48e9f92d9198a3e2790b/wandb/sdk/data_types/base_types/media.py#L31
 
 What to actually do
 -------------------
@@ -306,6 +321,12 @@ class Timer:
         self.stop()
 
 
+###############################################################################
+# Training-loop specific
+# Below, the logging utilities are specific to model training.
+###############################################################################
+
+
 class Metric:
     """A quantity like like loss or accuracy is tracked as a Metric.
 
@@ -354,6 +375,32 @@ class Metric:
             return self.value > other_val
         else:
             return self.value < other_val
+
+
+# Is a generic name-data class enough? Or are specific classes useful?
+# For the moment, let's try use a generic class. Leaving ImageList and
+# PlotlyFigureList here just as examples of the alternative approach.
+
+
+class LogData:
+    def __init__(self, label: str, content: Any):
+        self.label = label
+        self.content = content
+
+
+# class ImageList:
+#     """Wrap one or more images for logging (e.g. via Tensorboard)."""
+#
+#     def __init__(self, images):
+#         raise NotImplementedError()
+#
+#
+# class PlotlyFigureList:
+#     """Wrap one or more Plotly figures for logging (e.g. via Tensorboard)."""
+#
+#     def __init__(self, figs, label : str):
+#         self.figs = figs
+#         self.label = label
 
 
 class MetricTracker:
@@ -474,24 +521,64 @@ def print_metrics(metrics):
     _logger.info(" | ".join([f"{m.name}: {m.value:.5f}" for m in metrics]))
 
 
+def plotly_fig_to_array(fig) -> np.ndarray:
+    """Convert plotly figure to numpy array.
+
+    From:
+        https://community.plotly.com/t/converting-byte-object-to-numpy-array/40189/3
+    """
+    fig_bytes = fig.to_image(format="png")
+    buf = io.BytesIO(fig_bytes)
+    img = PIL.Image.open(buf)
+    array_rgba = np.asarray(img)
+    array_rgb = array_rgba[:,:,0:3]
+    return array_rgb
+
+
 class TbLogger(object):
     """Manages logging to TensorBoard."""
 
     def __init__(self, tensorboard_dir):
         self.writer = tb.SummaryWriter(str(tensorboard_dir))
 
-    def log_mixed_data(self, n_iter, data, log_group):
+    @staticmethod
+    def tag(label, log_group):
+        res = f"{label}/{log_group}"
+        return res
+
+    def log(self, n_iter, data, log_group):
+        """Log a mixture of different types of data."""
         for k, v in data.items():
-            pass
+            # The infamous if-else
+            if k == "metrics":
+                self.log_metrics(n_iter, v, log_group)
+            elif k == "plotly":
+                self.log_plotly(n_iter, v, log_group)
+            else:
+                raise ValueError(
+                    "Logging the given data is unsupported " f"({data})."
+                )
 
     def log_metrics(self, n_iter, metrics, log_group):
         for metric in metrics:
             self.writer.add_scalar(
-                f"{metric.name}/{log_group}", metric.value, n_iter
+                self.tag(metric.name, log_group), metric.value, n_iter
             )
 
     def log_scalar(self, n_iter, name, val, log_group):
-        self.writer.add_scalar(f"{name}/{log_group}", val, n_iter)
+        self.writer.add_scalar(self.tag(name, log_group), val, n_iter)
+
+    def log_plotly(self, n_iter, data: LogData, log_group):
+        if not isinstance(data.content, collections.abc.Iterable):
+            raise ValueError("Expected a iterable of plots.")
+        plots_as_arrays = [plotly_fig_to_array(p) for p in data.content]
+        plots_as_array = np.stack(plots_as_arrays)
+        self.writer.add_images(
+            self.tag(data.label, log_group),
+            plots_as_array,
+            n_iter,
+            dataformats="NHWC",
+        )
 
 
 class ModelSaver:

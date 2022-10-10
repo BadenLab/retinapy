@@ -287,8 +287,11 @@ def train(
             label = "val-ds"
         _logger.info(f"Running evaluation {label}")
         with evaluating(trainable.model), torch.no_grad(), timers.validation:
-            metrics = trainable.evaluate(dl)
-            tb_logger.log_metrics(step, metrics, label)
+            eval_results = trainable.evaluate(dl)
+            tb_logger.log(step, eval_results, label)
+            if "metrics" not in eval_results:
+                raise ValueError("Trainable.evaluate() must return metrics.")
+            metrics = eval_results["metrics"]
             retinapy._logging.print_metrics(metrics)
         tb_logger.log_scalar(
             step, "eval-time", timers.validation.elapsed(), label
