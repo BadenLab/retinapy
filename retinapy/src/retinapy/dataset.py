@@ -144,7 +144,9 @@ class DistFieldDataset(torch.utils.data.Dataset):
     stimulus and spike history.
     """
 
-    MASK_VALUE = 2
+    # Mask value should be negative. Zero represents no spikes, and 1+ represent
+    # a spike count which can be created than 1!
+    MASK_VALUE = -1
     RNG_SEED = 123
 
     # TODO: make configurable
