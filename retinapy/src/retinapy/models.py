@@ -42,11 +42,23 @@ def save_model(model, path: pathlib.Path, optimizer=None):
 
 
 def dist_loss(prediction, target):
+    """
+    MSE loss reduced along time dimension but not batch dimension.
+
+    It is expected that this loss is just one part of a loss term, so reducing
+    over the batch dimension is not done. And it's not even given as a option
+    as it's too easy to mistake "mean" reduction to be over a single dimension,
+    when it is a full reduction over all dimensions. This is a tricky aspect of
+    PyTorch's MSE loss.
+    """
     # Scale to get roughly in the ballpark of 0.1 to 10.
     DIST_LOSS_SCALE = 3000
-    loss = DIST_LOSS_SCALE * F.mse_loss(prediction, target)
-    return loss
-    
+    loss = DIST_LOSS_SCALE * F.mse_loss(prediction, target, reduction="none")
+    assert len(prediction.shape) == 2, "Batch and time dim expected."
+    time_ave = torch.mean(loss, dim=1)
+    batch_sum = torch.sum(time_ave)
+    return batch_sum
+
 
 class DistLossLinear(nn.Module):
     def __init__(self, alpha=0.1, beta=0.01):
