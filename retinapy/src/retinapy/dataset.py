@@ -147,7 +147,9 @@ class DistFieldDataset(torch.utils.data.Dataset):
     # Mask value should be negative. Zero represents no spikes, and 1+ represent
     # a spike count which can be created than 1!
     MASK_VALUE = -1
-    RNG_SEED = 123
+    # Do not! set a seed within the dataset. Process forking leads to identical
+    # seeds.
+    # RNG_SEED = 123
 
     # TODO: make configurable
     NOISE_SD = 0.1
@@ -169,7 +171,6 @@ class DistFieldDataset(torch.utils.data.Dataset):
     ):
         self.enable_augmentation = enable_augmentation
         self.num_stim_channels = recording.stimulus.shape[1]
-        self.rng = np.random.default_rng(self.RNG_SEED)
         self.pad = pad
         self.dist_clamp = dist_clamp
         self.ds = SnippetDataset(
@@ -209,17 +210,17 @@ class DistFieldDataset(torch.utils.data.Dataset):
         # Whole block scale.
         mu = 1.0
         sd = 0.15
-        scale = self.rng.normal(mu, sd, size=(1,))
+        scale = np.random.normal(mu, sd, size=(1,))
         # Whole block offset.
         mu = 0.0
         sigma = 0.15
-        offset_noise = self.rng.normal(mu, sigma, size=(1,))
+        offset_noise = np.random.normal(mu, sigma, size=(1,))
         # Per bin noise.
         max_length = stimulus.shape[1]
-        center, length = self.rng.integers(low=0, high=max_length, size=(2,))
+        center, length = np.random.randint(low=0, high=max_length, size=(2,))
         left = max(0, center - length // 2)
         right = min(max_length - 1, center + length // 2 + 1)
-        bin_noise = self.rng.normal(
+        bin_noise = np.random.normal(
             self.NOISE_MU,
             self.NOISE_SD,
             size=(self.num_stim_channels, (right - left)),
@@ -261,12 +262,12 @@ class DistFieldDataset(torch.utils.data.Dataset):
         spike_indicies = np.nonzero(spikes)
         spikes[spike_indicies] = 0
         # Add jitter
-        jitter = self.rng.integers(
+        jitter = np.random.randint(
             -self.NOISE_JITTER, self.NOISE_JITTER, len(spike_indicies)
         )
         spike_indicies = np.clip(spike_indicies + jitter, 0, len(spikes) - 1)
         # Drop some spikes.
-        new_spikes = self.rng.binomial(
+        new_spikes = np.random.binomial(
             1, p=(1 - self.DROP_RATE), size=len(spike_indicies)
         )
         spikes[spike_indicies] = new_spikes
@@ -426,3 +427,4 @@ class ConcatDistFieldDataset(LabeledConcatDataset):
     @property
     def stride(self):
         return self.datasets[0].stride
+
