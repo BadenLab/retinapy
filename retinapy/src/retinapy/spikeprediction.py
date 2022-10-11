@@ -17,6 +17,7 @@ import retinapy.train
 import retinapy.nn
 import scipy
 import torch
+import plotly.io
 
 
 DEFAULT_OUT_BASE_DIR = "./out/"
@@ -437,6 +438,11 @@ class DistFieldTrainable_(retinapy.train.Trainable):
         self.dist_norm = self.DEFAULT_DIST_NORM
         self.num_plots = 16
 
+    @property
+    def in_device(self): 
+        res = next(self.model.parameters()).device
+        return res
+
     def eval_bins(self) -> Iterable[int]:
         res = []
         for ms in self.eval_lengths_ms:
@@ -483,6 +489,9 @@ class DistFieldTrainable_(retinapy.train.Trainable):
         loss_meter = retinapy._logging.Meter("loss")
         plotly_figs = []
         for i, sample in enumerate(val_dl):
+            plotly.io.write_image(
+                    self.input_output_fig(sample, self.forward(sample)[0], idx=0),
+                    "./out/fig_debug.png", format="png")
             # Don't run out of memory, or take too long.
             num_so_far = val_dl.batch_size * i
             if num_so_far > self.max_eval_count:
@@ -532,7 +541,7 @@ class DistFieldTrainable_(retinapy.train.Trainable):
         return results
 
     def input_output_fig(self, sample, model_out, idx):
-        target_dist=self.distfield_to_nn_output(sample["dist"][idx])
+        target_dist = self.distfield_to_nn_output(sample["dist"][idx])
         fig = retinapy.vis.distfield_model_in_out(
             # Stimulus takes up all channels except the last.
             stimulus=sample["snippet"][idx][0:-1].cpu().numpy(),
@@ -549,6 +558,7 @@ class DistFieldTrainable_(retinapy.train.Trainable):
         # The legend takes up a lot of space, so disable it.
         fig.update_layout(showlegend=False)
         return fig
+
 
 
 class DistFieldTrainableMC(DistFieldTrainable_):
@@ -573,18 +583,37 @@ class DistFieldTrainableMC(DistFieldTrainable_):
         self.max_eval_count = int(1e5)
 
     def loss(self, m_dist, z_mu, z_lorvar, target):
+        batch_size = m_dist.shape[0]
         # Scale to get roughly in the ballpark of 1.
         dist_loss = self.dist_loss_fn(m_dist, target)
         kl_loss = -0.5 * torch.sum(1 + z_lorvar - z_mu.pow(2) - z_lorvar.exp())
-        β = 0.05
+        β = 1
         # β = 0
-        return dist_loss + β * kl_loss
+        batch_loss = dist_loss + β * kl_loss
+        batch_ave_loss = batch_loss / batch_size
+        return batch_ave_loss
+
+    def encode(
+        self, rec_idxs: torch.LongTensor, cluster_idxs: torch.LongTensor):
+        """
+        Return the latent representation of the given recording-cluster pairs.
+
+        Args:
+            rec_idxs: a batched tensor of recording indexes.
+            cluster_idxs: a batch tensor of cluster indexes.
+        """
+        # Maybe we should make a separate non-sampling function, but it's fine
+        # for now.
+        rec_idxs = rec_idxs.to(self.in_device)
+        cluster_idxs = cluster_idxs.to(self.in_device)
+        _, z, _ = self.model.encode(rec_idxs, cluster_idxs)
+        return z
 
     def forward(self, sample):
-        masked_snippet = sample["snippet"].float().cuda()
-        dist = sample["dist"].float().cuda()
-        rec_id = sample["rec_id"].int().cuda()
-        cluster_id = sample["cluster_id"].int().cuda()
+        masked_snippet = sample["snippet"].float().to(self.in_device)
+        dist = sample["dist"].float().to(self.in_device)
+        rec_id = sample["rec_id"].int().to(self.in_device)
+        cluster_id = sample["cluster_id"].int().to(self.in_device)
         m_dist, z_mu, z_logvar = self.model(masked_snippet, rec_id, cluster_id)
         # Dist model
         y = self.distfield_to_nn_output(dist)
@@ -630,7 +659,7 @@ def create_multi_cluster_df_datasets(
     train_ds = []
     val_ds = []
     test_ds = []
-    stride = 3
+    stride = 7
     for rec in recordings:
         dc_rec = mea.decompress_recording(rec, downsample=downsample)
         train_val_test_splits = mea.mirror_split(
@@ -682,8 +711,8 @@ def create_distfield_datasets(
             snippet_len=snippet_len,
             mask_begin=input_len,
             mask_end=snippet_len,
-            pad=LOSS_CALC_PAD_MS,
-            dist_clamp=DIST_CLAMP_MS,
+            pad=round(ms_to_num_bins(LOSS_CALC_PAD_MS, downsample)),
+            dist_clamp=round(ms_to_num_bins(DIST_CLAMP_MS, downsample)),
             enable_augmentation=use_augmentation,
             allow_cheating=False,
         )

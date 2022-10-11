@@ -134,9 +134,9 @@ class MiniVAE(nn.Module):
             z = z_mu
         return z, z_mu, z_logvar
 
+
 class QueryDecoder(nn.Module):
-    def __init__(self, n_z, num_queries, key_len, n_hidden1=30,
-                 n_hidden2=30):
+    def __init__(self, n_z, num_queries, key_len, n_hidden1=30, n_hidden2=30):
         super().__init__()
         self.out_shape = (num_queries, key_len)
         self.fc1 = nn.Linear(n_z, n_hidden1)
@@ -165,7 +165,7 @@ class MultiClusterModel2(nn.Module):
         # Linear
         self.linear_in_len = 1 + (in_len - 1) // (2**num_downsample)
 
-        #self.num_channels = [20, 30, 50, 100]
+        # self.num_channels = [20, 30, 50, 100]
         self.num_channels = [20, 100, 100, 100]
         self.downsample = [False, False, True, False]
         self.num_repeats = [None, 2, num_downsample - 1, 3]
@@ -185,11 +185,11 @@ class MultiClusterModel2(nn.Module):
         self.n_h2 = 20
         # HyperResnet
         warehouse_size = 1500
-        self.key_len =  16 # 32 = ~ sqrt(1000)
+        self.key_len = 16  # 32 = ~ sqrt(1000)
 
         # Huge memory store.
         self.warehouse = retinapy.nn.Conv1dWarehouse(
-            max_in_channels=1, # depth-wise conv.
+            max_in_channels=1,  # depth-wise conv.
             warehouse_size=warehouse_size,
             kernel_size=self.mid_kernel_size,
             key_len=self.key_len,
@@ -217,7 +217,7 @@ class MultiClusterModel2(nn.Module):
             retinapy.nn.create_batch_norm(self.num_channels[0]),
             nn.LeakyReLU(0.2, True),
         )
-        
+
         mid = []
         total_num_channels = 0
         for layer_idx in range(1, len(self.num_channels)):
@@ -259,7 +259,8 @@ class MultiClusterModel2(nn.Module):
         # VAE decode to attention query
         # 1 query per mid channel.
         self.query_decoder = QueryDecoder(
-            self.z_dim, total_num_channels, self.key_len)
+            self.z_dim, total_num_channels, self.key_len
+        )
 
     def encode(self, rec_id, cluster_id):
         id_ = rec_id * self.num_clusters + cluster_id
@@ -293,7 +294,7 @@ class MultiClusterModel(nn.Module):
         super(MultiClusterModel, self).__init__()
         self.in_len = in_len
         self.out_len = out_len
-        self.num_input_channels = self.LED_CHANNELS + self.NUM_CLUSTERS
+        self.num_input_channels = self.LED_CHANNELS * 2 + self.NUM_CLUSTERS
         # Linear
         self.linear_in_len = 1 + (in_len - 1) // (2**num_downsample)
         # L1
@@ -410,10 +411,24 @@ class MultiClusterModel(nn.Module):
     def encode(self, rec_id, cluster_id):
         id_ = rec_id * self.num_clusters + cluster_id
         z, z_mu, z_logvar = self.vae(id_)
-        return z, z_mu, z_logvar 
+        return z, z_mu, z_logvar
+
+    # def cat_downsample(self, x):
+    #     ds = torchaudio.functional.lowpass_biquad(
+    #             x[:,0:-1], sample_rate=992, cutoff_freq=10, Q=0.707
+    #     )
+    #     x = torch.cat([x, ds], dim=1)
+    #     return x
+
+    def cat_mean(self, snippet):
+        m = snippet[:,0:-1].mean(dim=2, keepdim=True).expand(
+                -1, -1, snippet.shape[-1])
+        x = torch.cat([snippet, m], dim=1)
+        return x
 
     def forward(self, snippet, rec_id, cluster_id):
-        x = self.layer0(snippet)
+        x = self.cat_mean(snippet)
+        x = self.layer0(x)
         # VAE
         z, z_mu, z_logvar = self.encode(rec_id, cluster_id)
         # Hyper
