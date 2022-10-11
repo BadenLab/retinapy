@@ -1,12 +1,15 @@
+from typing import Optional
+
+import numpy as np
+
 import plotly
 import plotly.graph_objects as go
 import plotly.subplots
-import numpy as np
-from typing import Optional
 import retinapy
 import retinapy.dataset
 import retinapy.mea as mea
 import retinapy.spikeprediction as sp
+import torch
 
 """
 This module is starting out as somewhere to create the most commonly figures 
@@ -428,14 +431,13 @@ def distfield_model_in_out(
     main_title_str = "Distfield model input-output"
     if cluster_label is not None:
         main_title_str += f" ({cluster_label})"
-    title = create_title(main_title_str,
+    title = create_title(
+        main_title_str,
         "Output region is highlight blue. Spikes are red v-lines.",
     )
     fig.update_layout(
         {
-            "title": {
-                "text": title
-            },
+            "title": {"text": title},
             "margin": {"t": 70},
             # The title and xaxis label fit within the margin, so it needs
             # to be big enough to fit them.
@@ -452,4 +454,44 @@ def distfield_model_in_out(
             },
         }
     )
+    return fig
+
+
+def latent_fig(trainable):
+    # 1. Gather the data to plot. We will actually do that here, so this is
+    # quite a proactive plotting function.
+    rec_idxs = [0]  # Only supports 1 recording for now.
+    cluster_idxs = []
+    cluster_ids = []
+    with torch.no_grad():
+        for r_idx in rec_idxs:
+            rec = trainable.train_ds.datasets[r_idx].recording
+            cluster_idxs = torch.arange(len(rec.cluster_ids))
+            cluster_idxs.append(np.array(cluster_idxs))
+            rec_idxs.append(torch.full_like(cluster_idxs[-1], r_idx))
+            # For labels, use the cell/cluster-id given by the spike sorter.
+            cluster_ids.extend([rec.cluster_ids[i] for i in cluster_idxs])
+        rec_idxs = torch.concat(rec_idxs)
+        cluster_idxs = torch.concat(cluster_idxs)
+        zs = trainable.encode(rec_idxs, cluster_idxs).cpu().numpy()
+    # 2. Make the figure
+    fig = go.Figure()
+    assert zs is not None
+    xs = zs[:, 0]
+    y = zs[:, 1]
+    labels = [
+        f"({r_idx}, {c_id})" for (r_idx, c_id) in zip(rec_idxs, cluster_ids)
+    ]
+    scatter = go.Scatter(
+        x=xs,
+        y=y,
+        text=labels,
+        textposition="bottom center",
+        mode="markers+text",
+    )
+    fig.add_trace(scatter)
+    #fig.update_layout(
+    #    xaxis={"range": [-3, 3]},
+    #    yaxis={"range": [-3, 3]},
+    #)
     return fig
