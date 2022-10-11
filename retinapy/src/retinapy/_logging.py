@@ -607,6 +607,7 @@ class ModelSaver:
     CKPT_FILENAME_FORMAT = "checkpoint_epoch-{epoch}.pth"
     LAST_CKPT_FILENAME = "checkpoint_last.pth"
     BEST_CKPT_FILENAME_FORMAT = "checkpoint_best_{metric_name}.pth"
+    RECOVERY_CKPT_FILENAME = "recovery.pth"
 
     def __init__(
         self,
@@ -628,6 +629,11 @@ class ModelSaver:
     @property
     def last_path(self):
         res = self.save_dir / self.LAST_CKPT_FILENAME
+        return res
+
+    @property
+    def recovery_path(self):
+        res = self.save_dir / self.RECOVERY_CKPT_FILENAME
         return res
 
     def epoch_path(self, epoch: int):
@@ -733,7 +739,27 @@ class ModelSaver:
         _logger.info(f"Unlinked old checkpoint: ({str(file_to_remove)})")
 
     def save_recovery(self):
-        raise NotImplementedError()
+        """Trigger the saving of a checkpoint to the recovery path.
 
-    def recover(self):
-        raise NotImplementedError()
+        The recovery checkpoint is the only checkpoint taken mid-epoch. It is 
+        created periodically to allow training to restart in the event of an 
+        error.
+        """
+        _logger.info("Creating recovery checkpoint: "
+                     f"({str(self.recovery_path)})")
+        retinapy.models.save_model(self.model, self.recovery_path, 
+                                   self.optimizer)
+
+    def delete_recovery(self):
+        """Delete the recovery checkpoint.
+
+        This can be manually whenever the recovery checkpoint becomes unneeded,
+        typically once training is finished.
+        """
+        if self.recovery_path.exists():
+            if not self.recovery_path.is_file():
+                raise Warning("Recovery path exists but is not a file "
+                              f"({str(self.recovery_path)})")
+            self.recovery_path.unlink()
+
+

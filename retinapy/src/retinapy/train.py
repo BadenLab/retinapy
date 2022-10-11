@@ -1,8 +1,6 @@
 from contextlib import contextmanager
 import logging
 import pathlib
-import time
-import datetime
 from typing import Optional, Union
 
 import retinapy._logging
@@ -13,11 +11,20 @@ import torch
 _logger = logging.getLogger(__name__)
 
 """
+Max training time before a new recovery is made.
+
+Standard checkpointing only happens every epoch. But a checkpoint for recovery
+purposes will be made every 30 minutes. Only a single recovery is kept.
+"""
+RECOVERY_CKPT_PERIOD_SEC = 30 * 60
+
+"""
 Here we take part in the rite of of passage for a deep learning project by
 yet again reinventing the training loop architecture. No one wants their 
 project stitched together with the callbacks of some soon to be abandonded or 
 rewritten DL framework.
 """
+
 
 class Trainable:
     """Encapsulates a dataset, model input-output and loss function.
@@ -147,6 +154,14 @@ class Trainable:
         """
         raise NotImplementedError("Override")
 
+    def in_device(self):
+        """Returns the device on which the model expects input to be located.
+
+        Most likely, the whole model is on a single device, and it is 
+        sufficient to use `next(self.model.parameters()).device`.
+        """
+        raise NotImplementedError("Override")
+
     def __str__(self) -> str:
         return f"Trainable ({self.label})"
 
@@ -207,12 +222,14 @@ class TrainingTimers:
         self.batch = retinapy._logging.Timer()
         self.epoch = retinapy._logging.Timer()
         self.validation = retinapy._logging.Timer()
+        self.recovery = retinapy._logging.Timer()
 
     @staticmethod
     def create_and_start():
         timer = TrainingTimers()
         timer.batch.restart()
         timer.epoch.restart()
+        timer.recovery.restart()
         return timer
 
 
@@ -339,24 +356,36 @@ def train(
                 elapsed_min, elapsed_sec = divmod(
                     round(timers.epoch.elapsed()), 60
                 )
+                # Floor total minutes to align with batch minutes.
+                total_hrs, total_min = divmod(
+                    int(timers.epoch.total_elapsed() / 60), 60
+                )
                 _logger.info(
                     f"epoch: {epoch}/{num_epochs} | "
                     f"step: {batch_step:>4}/{len(train_dl)} "
                     f"({batch_step/len(train_dl):>3.0%}) "
                     f"{round(1/timers.batch.rolling_duration()):>2}/s | "
-                    f"elapsed: {elapsed_min:>1}m:{elapsed_sec:02d}s | "
-                    f"loss: {loss_meter.avg:.5f} | "
-                    f"out mean (sd) : {model_mean:>4.3f} ({model_sd:>4.3f})"
+                    f"elapsed: {elapsed_min:>1}m:{elapsed_sec:02d}s "
+                    f"({total_hrs:>1}h:{total_min:02d}m) | "
+                    f"loss: {loss_meter.avg:.3f} | "
+                    f"out μ (σ): {model_mean:>3.2f} ({model_sd:>3.2f})"
                 )
                 loss_meter.reset()
 
             # Evaluate.
             # (step + 1), as we don't want to evaluate on the first step.
             if steps_til_eval and (batch_step + 1) % steps_til_eval == 0:
-                is_near_epoch_end = (batch_step + steps_til_eval >= len(train_dl))
+                is_near_epoch_end = batch_step + steps_til_eval >= len(train_dl)
                 if not is_near_epoch_end:
                     _eval()
             step += 1
+
+            # Recovery.
+            # Don't allow training to proceed too long without checkpointing.
+            if timers.recovery.elapsed() > RECOVERY_CKPT_PERIOD_SEC:
+                model_saver.save_recovery()
+                timers.recovery.restart()
+                
 
         _logger.info(
             f"Finished epoch in {round(timers.epoch.elapsed())} secs "
@@ -369,3 +398,8 @@ def train(
         # to callbacks.
         improved_metrics = metric_tracker.on_epoch_end(metrics, epoch)
         model_saver.save_checkpoint(epoch, improved_metrics)
+        timers.recovery.restart()
+    _logger.info(
+        f"Finished training. {round(timers.epoch.total_elapsed())} "
+        "secs elsapsed."
+    )
