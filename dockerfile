@@ -151,9 +151,11 @@ RUN pip install \
 		kaleido \
 		torchinfo \
 		semantic_version \
+		dash \
+		jupyter-dash \
 		mypy
 
-
+RUN jupyter lab build # needed for Dash. Very annoying. Takes ages.
 USER root
 # In order to allow the Python package to be edited without
 # a rebuild, install all code as a volume. We will still copy the
