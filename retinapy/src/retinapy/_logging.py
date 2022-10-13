@@ -719,7 +719,6 @@ class ModelSaver:
         saved_epochs = sorted(self.checkpoints_by_epoch.keys())
         max_epoch = saved_epochs[-1]
         to_remove = None
-        j_start = 0
         prev_zone = -1
         to_remove = saved_epochs[0]
         for e in saved_epochs:
