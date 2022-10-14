@@ -439,7 +439,7 @@ class DistFieldTrainable_(retinapy.train.Trainable):
         self.num_plots = 16
 
     @property
-    def in_device(self): 
+    def in_device(self):
         res = next(self.model.parameters()).device
         return res
 
@@ -490,8 +490,10 @@ class DistFieldTrainable_(retinapy.train.Trainable):
         plotly_figs = []
         for i, sample in enumerate(val_dl):
             plotly.io.write_image(
-                    self.input_output_fig(sample, self.forward(sample)[0], idx=0),
-                    "./out/fig_debug.png", format="png")
+                self.input_output_fig(sample, self.forward(sample)[0], idx=0),
+                "./out/fig_debug.png",
+                format="png",
+            )
             # Don't run out of memory, or take too long.
             num_so_far = val_dl.batch_size * i
             if num_so_far > self.max_eval_count:
@@ -560,7 +562,6 @@ class DistFieldTrainable_(retinapy.train.Trainable):
         return fig
 
 
-
 class DistFieldTrainableMC(DistFieldTrainable_):
     def __init__(
         self, train_ds, val_ds, test_ds, model, model_label, eval_lengths
@@ -594,7 +595,8 @@ class DistFieldTrainableMC(DistFieldTrainable_):
         return batch_ave_loss
 
     def encode(
-        self, rec_idxs: torch.LongTensor, cluster_idxs: torch.LongTensor):
+        self, rec_idxs: torch.LongTensor, cluster_idxs: torch.LongTensor
+    ):
         """
         Return the latent representation of the given recording-cluster pairs.
 
@@ -659,7 +661,7 @@ def create_multi_cluster_df_datasets(
     train_ds = []
     val_ds = []
     test_ds = []
-    stride = 7
+    stride = 17
     for rec in recordings:
         dc_rec = mea.decompress_recording(rec, downsample=downsample)
         train_val_test_splits = mea.mirror_split(
@@ -895,11 +897,15 @@ def _train(out_dir):
     logging.info(f"Total: {total_trainables} models to be trained.")
 
     # Load the data.
-    # recordings = mea.load_3brain_recordings(
-    #    opt.stimulus_pattern,
-    #    opt.stimulus,
-    #    opt.response,
-    # )
+    recordings = mea.load_3brain_recordings(
+        opt.stimulus_pattern,
+        opt.stimulus,
+        opt.response,
+    )
+    ## Filter the recording with different sample rate
+    skip_rec_names = {"Chicken_21_08_21_Phase_00"}
+    recordings = [r for r in recordings if r.name not in skip_rec_names]
+    
     ## Filter recordings, if requested.
     # if opt.recording_names is not None:
     #    recordings = [
@@ -908,16 +914,16 @@ def _train(out_dir):
     # logging.info(f"Loaded {len(recordings)} recordings, compressed:")
     # for r in recordings:
     #    logging.info(f"  {r.name}")
-    recordings = [
-        mea.single_3brain_recording(
-            opt.recording_names[0],
-            mea.load_stimulus_pattern(opt.stimulus_pattern),
-            mea.load_recorded_stimulus(opt.stimulus),
-            mea.load_response(opt.response),
-            # include_clusters={21, 138},
-            # include_clusters={21, },
-        )
-    ]
+    # recordings = [
+    #    mea.single_3brain_recording(
+    #        opt.recording_names[0],
+    #        mea.load_stimulus_pattern(opt.stimulus_pattern),
+    #        mea.load_recorded_stimulus(opt.stimulus),
+    #        mea.load_response(opt.response),
+    #        # include_clusters={21, 138},
+    #        # include_clusters={21, },
+    #    )
+    # ]
 
     done_trainables = set()
     for c in all_configs:

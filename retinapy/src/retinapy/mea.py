@@ -939,7 +939,6 @@ def labeled_spike_snippets(
     cluster_ids = np.array(cluster_ids)
     return snippets, cluster_ids
 
-
 def generate_fake_spikes(
     spikes,
     num_fake_per_real,
