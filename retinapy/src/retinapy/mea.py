@@ -3,7 +3,7 @@ import itertools
 import concurrent.futures
 import logging
 import math
-from typing import Dict, List, Tuple, Union, Sequence, Optional, Set
+from typing import Dict, List, Tuple, Union, Sequence, Optional, Set, Iterable
 import pathlib
 import pickle
 import numpy as np
@@ -511,7 +511,7 @@ def single_3brain_recording(
 
 
 def decompress_recordings(
-    recordings: List[CompressedSpikeRecording],
+    recordings: Iterable[CompressedSpikeRecording],
     downsample: int = 1,
     num_workers=5,
 ) -> List[SpikeRecording]:

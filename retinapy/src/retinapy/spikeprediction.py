@@ -662,10 +662,10 @@ def create_multi_cluster_df_datasets(
     val_ds = []
     test_ds = []
     stride = 17
-    for rec in recordings:
-        dc_rec = mea.decompress_recording(rec, downsample=downsample)
+    dc_recs = mea.decompress_recordings(recordings, downsample=downsample)
+    for rec in dc_recs:
         train_val_test_splits = mea.mirror_split(
-            dc_rec, split_ratio=SPLIT_RATIO
+            rec, split_ratio=SPLIT_RATIO
         )
         snippet_len = input_len + output_len
         train_val_test_datasets = [
