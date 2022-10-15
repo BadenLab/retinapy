@@ -492,9 +492,8 @@ class DistFieldTrainable_(retinapy.train.Trainable):
             if num_so_far > self.max_eval_count:
                 break
             target_spikes = sample["target_spikes"].float().cuda()
-            batch_len = target_spikes.shape[0]
             model_output, loss = self.forward(sample)
-            loss_meter.update(loss.item(), batch_len)
+            loss_meter.update(loss.item())
             # Count accuracies
             for eval_len in self.eval_lengths_ms:
                 eval_bins = self.eval_ms_to_bins(eval_len)

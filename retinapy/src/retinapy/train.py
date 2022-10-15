@@ -340,12 +340,10 @@ def train(
             grad_scaler.step(optimizer)
             grad_scaler.update()
 
-            batch_size = len(next(iter(sample.values())))
-            loss_meter.update(total_loss.item(), batch_size)
+            # Loss is expected to be returned already batch averaged.
+            loss_meter.update(total_loss.item())
             metrics = [
-                retinapy._logging.Metric(
-                    "loss", total_loss.item() / batch_size
-                ),
+                retinapy._logging.Metric("loss", total_loss.item()),
             ]
             tb_logger.log_metrics(step, metrics, log_group="train")
 
