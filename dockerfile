@@ -40,6 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 	 libsm6 \
 	 libxext6 \
      libxrender-dev \
+	 jq \
 	 ffmpeg && \
 	 rm -rf /var/lib/apt/lists/*
 
