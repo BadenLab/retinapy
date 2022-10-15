@@ -414,7 +414,7 @@ class DistFieldTrainable_(retinapy.train.Trainable):
     """
     MIN_DIST: float = 0.5
     DEFAULT_EVAL_LENGTHS_MS = [10, 50, 100]
-    DEFAULT_MAX_EVAL_COUNT = int(1e7)
+    DEFAULT_MAX_EVAL_COUNT = int(5e5)
     DEFAULT_DIST_NORM = 20
 
     def __init__(
