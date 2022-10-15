@@ -112,7 +112,7 @@ RUN conda install --yes \
 	pandas \
 	scipy \
 	pytorch \
-	cudatoolkit=11.6 \
+	cudatoolkit=11.7 \
 	jupyterlab  \
 	matplotlib \
 	plotly \
