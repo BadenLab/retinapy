@@ -5,6 +5,7 @@ from typing import Union
 import pathlib
 
 import retinapy
+import retinapy.mea as mea
 import retinapy.nn
 
 import logging
@@ -449,7 +450,8 @@ class DistanceFieldCnnModel(nn.Module):
         super(DistanceFieldCnnModel, self).__init__()
         self.in_len = in_len
         self.out_len = out_len
-        self.num_input_channels = self.LED_CHANNELS * 2 + self.NUM_CLUSTERS
+        # led_channels, mean(led_channels), num_clusters, pos_encoding 
+        self.num_input_channels = self.LED_CHANNELS * 2 + self.NUM_CLUSTERS + 1
         self.clamp_max = clamp_max
         self.l1_num_channels = 40
         self.l2_num_channels = 50
@@ -525,7 +527,7 @@ class DistanceFieldCnnModel(nn.Module):
         )
 
     def cat_mean(self, snippet):
-        m = snippet[:,0:-1].mean(dim=2, keepdim=True).expand(
+        m = snippet[:,0:mea.NUM_STIMULUS_LEDS].mean(dim=2, keepdim=True).expand(
                 -1, -1, snippet.shape[-1])
         x = torch.cat([snippet, m], dim=1)
         return x
