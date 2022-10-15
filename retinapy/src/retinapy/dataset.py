@@ -281,7 +281,9 @@ class DistFieldDataset(torch.utils.data.Dataset):
         |  a) input stimulus                            |
         +---------------------------------+-------------+---------+
         |  b) input spike data            | c) masked   | d) pad* |
-        +---------------------------------+-------------+---------+
+        +---------------------------------+-------------+
+        |  e) position encoding                         |
+        +---------------------------------+-------------+
 
         Note (d*): there is an extra bit of spike data used when creating
         a sample, here called a pad. The pad is used to calculate the ground
@@ -317,10 +319,13 @@ class DistFieldDataset(torch.utils.data.Dataset):
         spikes = extra_long_spikes[0 : -self.pad]
         # 5. Normalize
         stimulus_norm = self.normalize_stimulus(stimulus)
-        # spikes_norm = self.normalize_spikes(spikes)
+        # 6. Position encoding.
+        pos_enc = np.log(np.arange(len(spikes)) - self.mask_slice.start)
         # TODO: what about cheating? Why now?
-        # 6. Stack stimulus and spike data to make X.
-        snippet = np.vstack((stimulus_norm, spikes))
+        # 7. Stack 
+        snippet = np.vstack((stimulus_norm, 
+                             # pos_enc, 
+                             spikes))
         # Returning a dictionary is more flexible than returning a tuple, as
         # we can add to the dictionary without breaking existing consumers of
         # the dataset.

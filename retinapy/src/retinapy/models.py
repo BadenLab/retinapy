@@ -449,7 +449,7 @@ class DistanceFieldCnnModel(nn.Module):
         super(DistanceFieldCnnModel, self).__init__()
         self.in_len = in_len
         self.out_len = out_len
-        self.num_input_channels = self.LED_CHANNELS + self.NUM_CLUSTERS
+        self.num_input_channels = self.LED_CHANNELS * 2 + self.NUM_CLUSTERS
         self.clamp_max = clamp_max
         self.l1_num_channels = 40
         self.l2_num_channels = 50
@@ -469,25 +469,18 @@ class DistanceFieldCnnModel(nn.Module):
             nn.LeakyReLU(0.2, True),
             nn.Conv1d(
                 self.l1_num_channels,
-                self.l2_num_channels,
+                self.l1_num_channels,
                 kernel_size=kernel_size,
                 stride=1,  # was 2.
                 padding=(kernel_size - 1) // 2,
                 bias=False,
             ),
-            retinapy.nn.create_batch_norm(self.l2_num_channels),
+            retinapy.nn.create_batch_norm(self.l1_num_channels),
             nn.LeakyReLU(0.2, True),
         )
         self.layer1 = nn.Sequential(
             retinapy.nn.ResBlock1d(
-                self.l2_num_channels,
-                self.l2_num_channels,
-                self.l2_num_channels,
-                kernel_size=mid_kernel_size,
-                downsample=False,
-            ),
-            retinapy.nn.ResBlock1d(
-                self.l2_num_channels,
+                self.l1_num_channels,
                 self.l2_num_channels,
                 self.l2_num_channels,
                 kernel_size=mid_kernel_size,
@@ -531,7 +524,14 @@ class DistanceFieldCnnModel(nn.Module):
             out_features=self.out_len,
         )
 
+    def cat_mean(self, snippet):
+        m = snippet[:,0:-1].mean(dim=2, keepdim=True).expand(
+                -1, -1, snippet.shape[-1])
+        x = torch.cat([snippet, m], dim=1)
+        return x
+
     def forward(self, x):
+        x = self.cat_mean(x)
         x = self.layer0(x)
         x = self.layer1(x)
         x = self.layer2(x)

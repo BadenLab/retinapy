@@ -291,6 +291,7 @@ def distfield_model_in_out(
     in_spikes: np.ndarray,
     target_dist: np.ndarray,
     model_out: np.ndarray,
+    pos_enc: Optional[np.ndarray] = None,
     start_ms=0,
     bin_duration_ms=1.0,
     cluster_label=None,
@@ -302,7 +303,7 @@ def distfield_model_in_out(
     like so:
 
     +--------------------+
-    |      stimulus      |
+    |      stimulus      | (includes the position encoding, if any)
     +--------------------+
     | spikes      | dist |
     +--------------------+
@@ -310,6 +311,7 @@ def distfield_model_in_out(
     """
     # The figure will be built in 4 steps:
     #   1. The 4-channel stimuli that spans the whole x-axis.
+    #       1.1 Draw a 5th line for the position encoding, if any.
     #   2. The sum of the 4-channel stimuli (in black). This line is plotted
     #      below the 4-channel stimuli and also spans the whole x-axis.
     #   3. The model output distance field and the true (target) distance field.
@@ -341,6 +343,18 @@ def distfield_model_in_out(
                 y=stimulus[idx, :],
                 line_color=stim.display_hex,
                 name=f"{stim.wavelength} nm",
+                mode="lines",
+            ),
+            row=1,
+            col=1,
+        )
+    if pos_enc is not None:
+        fig.append_trace(
+            go.Scatter(
+                x=xs,
+                y=pos_enc,
+                line_color="black",
+                name="pos enc",
                 mode="lines",
             ),
             row=1,
@@ -448,9 +462,6 @@ def distfield_model_in_out(
                 "range": [-2, 2],
                 "tickmode": "array",
                 "tickvals": [-1, 0, 1],
-            },
-            "xaxis": {
-                "range": [0, stim_len],
             },
         }
     )

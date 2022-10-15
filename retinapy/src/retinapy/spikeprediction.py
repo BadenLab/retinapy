@@ -521,11 +521,11 @@ class DistFieldTrainable_(retinapy.train.Trainable):
                 p.cpu().numpy(), t.cpu().numpy()
             )[0]
             metrics.append(
-                retinapy._logging.Metric(f"accuracy-{eval_len}_bins", acc)
+                retinapy._logging.Metric(f"accuracy-{eval_len}_ms", acc)
             )
             metrics.append(
                 retinapy._logging.Metric(
-                    f"pearson_corr-{eval_len}_bins", pearson_corr
+                    f"pearson_corr-{eval_len}_ms", pearson_corr
                 )
             )
         results = {
@@ -554,10 +554,11 @@ class DistFieldTrainable_(retinapy.train.Trainable):
 
         fig = retinapy.vis.distfield_model_in_out(
             # Stimulus takes up all channels except the last.
-            stimulus=sample["snippet"][idx][0:-1].cpu().numpy(),
+            stimulus=sample["snippet"][idx][0:4].cpu().numpy(),
             in_spikes=sample["snippet"][idx][-1].cpu().numpy(),
             target_dist=target_dist.cpu().numpy(),
             model_out=model_out[idx].cpu().numpy(),
+            pos_enc=sample["snippet"][idx][4].cpu().numpy(),
             start_ms=0,
             bin_duration_ms=self.sample_period_ms,
             cluster_label=cluster_label(sample),
