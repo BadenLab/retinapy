@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import math
 
 
 def create_batch_norm(n):
@@ -526,17 +527,28 @@ class HyperResDecoder(nn.Module):
         self.fcA3 = nn.Linear(
             hidden2_n, self.att3_shape[0] * self.att3_shape[1]
         )
+        self._reset_parameters()
+
+    def _reset_parameters(self):
+        nn.init.xavier_uniform_(self.fcA1.weight)
+        nn.init.xavier_uniform_(self.fcA2.weight)
+        nn.init.xavier_uniform_(self.fcA3.weight)
+        self.fcA1.bias.data.fill_(0.0)
+        self.fcA2.bias.data.fill_(0.0)
+        self.fcA3.bias.data.fill_(0.0)
+
 
     def forward(self, x, z):
         batch_size = x.shape[0]
         h = torch.relu(self.fc1(z))
         h = torch.relu(self.fc2(h))
+        key_scale = math.sqrt(h.shape[-1])
         att1 = F.softmax(
             self.fcA1(h).view(
                 batch_size,
                 self.hyper_res_block.mid_n,
                 self.hyper_res_block.mid_warehouse_n,
-            ),
+            ) / key_scale,
             dim=2,
         )
         att2 = F.softmax(
@@ -544,7 +556,7 @@ class HyperResDecoder(nn.Module):
                 batch_size,
                 self.hyper_res_block.mid_n,
                 self.hyper_res_block.mid_warehouse_n,
-            ),
+            ) / key_scale,
             dim=2,
         )
         att3 = F.softmax(
@@ -552,7 +564,7 @@ class HyperResDecoder(nn.Module):
                 batch_size,
                 self.hyper_res_block.out_n,
                 self.hyper_res_block.out_warehouse_n,
-            ),
+            ) / key_scale,
             dim=2,
         )
         x = self.hyper_res_block(x, att1, att2, att3)
