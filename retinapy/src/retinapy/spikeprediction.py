@@ -789,6 +789,7 @@ class MultiClusterDistFieldTGroup(TrainableGroup):
             cls.num_downsample_layers(config.input_len, config.output_len),
             len(recordings),
             max_num_clusters,
+            z_dim=15,
         )
         res = DistFieldTrainableMC(
             train_ds,

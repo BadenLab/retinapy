@@ -165,7 +165,6 @@ class MultiClusterModel2(nn.Module):
         # Linear
         self.linear_in_len = 1 + (in_len - 1) // (2**num_downsample)
 
-        # self.num_channels = [20, 30, 50, 100]
         self.num_channels = [20, 100, 100, 100]
         self.downsample = [False, False, True, False]
         self.num_repeats = [None, 2, num_downsample - 1, 3]
@@ -289,8 +288,8 @@ class MultiClusterModel(nn.Module):
     NUM_CLUSTERS = 1
 
     def __init__(
-        self, in_len, out_len, num_downsample, num_recordings, num_clusters
-    ):
+        self, in_len, out_len, num_downsample, num_recordings, num_clusters,
+        z_dim=2):
         super(MultiClusterModel, self).__init__()
         self.in_len = in_len
         self.out_len = out_len
@@ -310,7 +309,7 @@ class MultiClusterModel(nn.Module):
         kernel_size = 21
         mid_kernel_size = 7
         # VAE
-        self.z_dim = 2
+        self.z_dim = z_dim
         self.num_recordings = num_recordings
         self.num_clusters = num_clusters
         # HyperResnet
@@ -332,7 +331,7 @@ class MultiClusterModel(nn.Module):
                 self.l0_num_channels,
                 self.l0_num_channels,
                 kernel_size=kernel_size,
-                stride=1,  # was 2.
+                stride=1,  
                 padding=kernel_size // 2,
                 bias=False,
             ),
