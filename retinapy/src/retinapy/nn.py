@@ -146,7 +146,7 @@ class ResBlock1d(nn.Module):
             dilation=1,
             bias=False,
         )
-        # To use batch norm or group norm? Most
+        # To use batch norm or group norm? 
         self.bn1 = create_batch_norm(mid_n)
         self.bn2 = create_batch_norm(mid_n)
         self.bn3 = create_batch_norm(out_n)

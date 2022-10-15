@@ -454,7 +454,7 @@ class DistanceFieldCnnModel(nn.Module):
         self.l1_num_channels = 40
         self.l2_num_channels = 50
         self.l3_num_channels = 100
-        kernel_size = 21
+        kernel_size = 151
         mid_kernel_size = 7
         self.layer0 = nn.Sequential(
             nn.Conv1d(
