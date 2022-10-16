@@ -90,6 +90,7 @@ def parse_args():
     parser.add_argument("--labels", type=str, default=None, help="List of experiment labels. Used for naming files and/or subfolders.")
     parser.add_argument("--epochs", type=int, default=8, metavar="N", help="number of epochs to train (default: 300)")
     parser.add_argument("--batch-size", type=int, default=128, help="batch size")
+    parser.add_argument("--zdim", type=int, default=2, help="VAE latent dimension")
     # fmt: on
 
     # First check if we have a config file to deal with.
@@ -587,7 +588,7 @@ class DistFieldTrainableMC(DistFieldTrainable_):
         # Network output should ideally have mean,sd = (0, 1). Network output
         # 20*exp([-3, 3])  = [1.0, 402], which is a pretty good range, with
         # 20 being the mid point. Is this too low?
-        self.max_eval_count = int(1e6)
+        self.max_eval_count = int(2e5)
 
     def loss(self, m_dist, z_mu, z_lorvar, target):
         batch_size = m_dist.shape[0]
@@ -712,18 +713,19 @@ class DistFieldTrainableMC(DistFieldTrainable_):
                     f"pearson_corr-{eval_len}_ms", pearson_corr
                 )
             )
-        # Add the latent space visualization.
-        rec_ids, _, cluster_ids, z_xs, z_ys = list(
-            self.all_encodings().T.cpu().numpy()
-        )
-        latent_fig = retinapy.vis.latent_fig(rec_ids, cluster_ids, z_xs, z_ys)
         results = {
             "metrics": metrics,
             "input-output-figs": retinapy._logging.PlotlyFigureList(
                 input_output_figs
             ),
-            "latent-fig": retinapy._logging.PlotlyFigureList([latent_fig]),
         }
+        # Add the latent space visualization.
+        if self.model.z_dim == 2:
+            rec_ids, _, cluster_ids, z_xs, z_ys = list(
+                self.all_encodings().T.cpu().numpy()
+            )
+            latent_fig = retinapy.vis.latent_fig(rec_ids, cluster_ids, z_xs, z_ys)
+            results["latent-fig"] = retinapy._logging.PlotlyFigureList([latent_fig])
         return results
 
 
@@ -920,7 +922,7 @@ class MultiClusterDistFieldTGroup(TrainableGroup):
             cls.num_downsample_layers(config.input_len, config.output_len),
             len(recordings),
             max_num_clusters,
-            z_dim=2,
+            z_dim=opt.zdim,
         )
         res = DistFieldTrainableMC(
             train_ds,
