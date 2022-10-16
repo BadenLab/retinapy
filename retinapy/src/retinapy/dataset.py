@@ -209,11 +209,11 @@ class DistFieldDataset(torch.utils.data.Dataset):
         """
         # Whole block scale.
         mu = 1.0
-        sd = 0.15
+        sd = 0.10
         scale = np.random.normal(mu, sd, size=(1,))
         # Whole block offset.
         mu = 0.0
-        sigma = 0.15
+        sigma = 0.10
         offset_noise = np.random.normal(mu, sigma, size=(1,))
         # Per bin noise.
         max_length = stimulus.shape[1]
