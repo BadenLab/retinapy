@@ -142,7 +142,7 @@ class VAE(nn.Module):
         self.embed_logvar = nn.Embedding(num_clusters, z_n)
         self.fc1 = nn.Linear(z_n, h1_n)
         self.fc2 = nn.Linear(h1_n, h2_n)
-        self.fc3 = nn.Linear(h2_n, out_n)
+        self.fc3 = nn.Linear(h2_n + z_n, out_n)
 
     def encode(self, x):
         x = x.long()
@@ -156,9 +156,14 @@ class VAE(nn.Module):
         return eps.mul_(std).add_(mu)
 
     def decode(self, z):
+        """
+        Trying out skip connections, due to positive results reported here:
+             https://adjidieng.github.io/Papers/skipvae.pdf
+        """
         h1 = F.relu(self.fc1(z))
         h2 = F.relu(self.fc2(h1))
-        return self.fc3(h2)
+        h2_skip = torch.cat([h2, z], dim=1)
+        return self.fc3(h2_skip)
 
     def forward(self, x):
         z_mu, z_logvar = self.encode(x)
@@ -336,16 +341,16 @@ class CatMultiClusterModel(nn.Module):
         # CNN parameters
         self.num_l1_blocks = num_downsample - 1
         self.num_l2_blocks = 3
-        self.expansion = 1
-        self.l1_num_channels = 100
-        self.l2_num_channels = 200
+        self.expansion = 2
+        self.l1_num_channels = 400
+        self.l2_num_channels = 500
         kernel_size = 21
         mid_kernel_size = 7
         # VAE
         self.z_dim = z_dim
         self.num_recordings = num_recordings
         self.num_clusters = num_clusters
-        self.n_vae_out = 5
+        self.n_vae_out = 30
 
         self.layer0 = nn.Sequential(
             nn.Conv1d(
@@ -432,13 +437,17 @@ class CatMultiClusterModel(nn.Module):
         x = torch.cat([snippet, m], dim=1)
         return x
 
+    def cat_z(self, x, z):
+        z = z.unsqueeze(-1).expand(-1, -1, x.shape[-1])
+        x = torch.cat([x, z], dim=1)
+        return x
+
     def forward(self, snippet, rec_id, cluster_id):
         # VAE
         x = self.cat_mean(snippet)
         x = self.layer0(x)
         z_decode, z_mu, z_logvar = self.encode(rec_id, cluster_id)
-        z_decode = z_decode.unsqueeze(-1).expand(-1, -1, x.shape[-1])
-        x = torch.cat([x, z_decode], dim=1)
+        x = self.cat_z(x, z_decode)
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
