@@ -53,7 +53,7 @@ def dist_loss(prediction, target):
     PyTorch's MSE loss.
     """
     # Scale to get roughly in the ballpark of 0.1 to 10.
-    DIST_LOSS_SCALE = 3000
+    DIST_LOSS_SCALE = 3
     loss = DIST_LOSS_SCALE * F.mse_loss(prediction, target, reduction="none")
     assert len(prediction.shape) == 2, "Batch and time dim expected."
     time_ave = torch.mean(loss, dim=1)
@@ -134,6 +134,39 @@ class MiniVAE(nn.Module):
         else:
             z = z_mu
         return z, z_mu, z_logvar
+
+class VAE(nn.Module):
+    def __init__(self, num_clusters, z_n=2, h1_n=16, h2_n=32, out_n=5):
+        super(VAE, self).__init__()
+        self.embed_mu = nn.Embedding(num_clusters, z_n)
+        self.embed_logvar = nn.Embedding(num_clusters, z_n)
+        self.fc1 = nn.Linear(z_n, h1_n)
+        self.fc2 = nn.Linear(h1_n, h2_n)
+        self.fc3 = nn.Linear(h2_n, out_n)
+
+    def encode(self, x):
+        x = x.long()
+        mu = self.embed_mu(x)
+        logvar = self.embed_logvar(x)
+        return mu, logvar
+
+    def sampling(self, mu, logvar):
+        std = logvar.mul(0.5).exp_()
+        eps = std.new_empty(std.size()).normal_()
+        return eps.mul_(std).add_(mu)
+
+    def decode(self, z):
+        h1 = F.relu(self.fc1(z))
+        h2 = F.relu(self.fc2(h1))
+        return self.fc3(h2)
+
+    def forward(self, x):
+        z_mu, z_logvar = self.encode(x)
+        if self.training:
+            z = self.sampling(z_mu, z_logvar)
+        else:
+            z = z_mu
+        return self.decode(z), z_mu, z_logvar
 
 
 class QueryDecoder(nn.Module):
@@ -284,6 +317,135 @@ class MultiClusterModel2(nn.Module):
         return x, z_mu, z_logvar
 
 
+class CatMultiClusterModel(nn.Module):
+    LED_CHANNELS = 4
+    NUM_CLUSTERS = 1
+
+    def __init__(
+        self, in_len, out_len, num_downsample, num_recordings, num_clusters,
+        z_dim=2):
+        super().__init__()
+        self.in_len = in_len
+        self.out_len = out_len
+        # led_channels, mean(led_channels), num_clusters, pos_encoding
+        self.num_input_channels = self.LED_CHANNELS * 2 + self.NUM_CLUSTERS + 1
+        # Linear
+        self.linear_in_len = 1 + (in_len - 1) // (2**num_downsample)
+        # L1
+        self.l0_num_channels = 50
+        # CNN parameters
+        self.num_l1_blocks = num_downsample - 1
+        self.num_l2_blocks = 3
+        self.expansion = 1
+        self.l1_num_channels = 100
+        self.l2_num_channels = 200
+        kernel_size = 21
+        mid_kernel_size = 7
+        # VAE
+        self.z_dim = z_dim
+        self.num_recordings = num_recordings
+        self.num_clusters = num_clusters
+        self.n_vae_out = 5
+
+        self.layer0 = nn.Sequential(
+            nn.Conv1d(
+                self.num_input_channels,
+                self.l0_num_channels,
+                kernel_size=kernel_size,
+                stride=2,
+                padding=kernel_size // 2,
+                bias=True,
+            ),
+            nn.LeakyReLU(0.2, True),
+            nn.Conv1d(
+                self.l0_num_channels,
+                self.l0_num_channels,
+                kernel_size=kernel_size,
+                stride=1,  
+                padding=kernel_size // 2,
+                bias=False,
+            ),
+            retinapy.nn.create_batch_norm(self.l0_num_channels),
+            nn.LeakyReLU(0.2, True),
+        )
+
+        l1_blocks = []
+        l1_num_in = self.l0_num_channels + self.n_vae_out
+        for i in range(self.num_l1_blocks):
+            num_in = self.l1_num_channels if i else l1_num_in
+            l1_blocks.append(
+                retinapy.nn.ResBlock1d(
+                    num_in,
+                    self.l1_num_channels * self.expansion,
+                    self.l1_num_channels,
+                    kernel_size=mid_kernel_size,
+                    downsample=True,
+                ),
+            )
+        self.layer1 = nn.Sequential(*l1_blocks)
+        l2_blocks = []
+        for i in range(self.num_l1_blocks):
+            num_in = self.l2_num_channels if i else self.l1_num_channels
+            l2_blocks.append(
+                retinapy.nn.ResBlock1d(
+                    num_in,
+                    self.l2_num_channels * self.expansion,
+                    self.l2_num_channels,
+                    kernel_size=mid_kernel_size,
+                    downsample=False,
+                ),
+            )
+        self.layer2 = nn.Sequential(*l2_blocks)
+
+        self.layer3 = nn.Conv1d(
+            in_channels=self.l2_num_channels,
+            out_channels=1,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            bias=True)
+
+        linear_in_len = 1 + (in_len - 1) // (2**num_downsample)
+        self.linear = nn.Linear(
+            in_features=linear_in_len,
+            out_features=self.out_len,
+        )
+        # VAE
+        self.vae = VAE(num_recordings * num_clusters, z_n=self.z_dim, 
+                           out_n=self.n_vae_out)
+
+    def encode(self, rec_id, cluster_id):
+        id_ = rec_id * self.num_clusters + cluster_id
+        z_decode, z_mu, z_logvar = self.vae(id_)
+        return z_decode, z_mu, z_logvar
+
+    # def cat_downsample(self, x):
+    #     ds = torchaudio.functional.lowpass_biquad(
+    #             x[:,0:-1], sample_rate=992, cutoff_freq=10, Q=0.707
+    #     )
+    #     x = torch.cat([x, ds], dim=1)
+    #     return x
+
+    def cat_mean(self, snippet):
+        m = snippet[:,0:mea.NUM_STIMULUS_LEDS].mean(dim=2, keepdim=True).expand(
+                -1, -1, snippet.shape[-1])
+        x = torch.cat([snippet, m], dim=1)
+        return x
+
+    def forward(self, snippet, rec_id, cluster_id):
+        # VAE
+        x = self.cat_mean(snippet)
+        x = self.layer0(x)
+        z_decode, z_mu, z_logvar = self.encode(rec_id, cluster_id)
+        z_decode = z_decode.unsqueeze(-1).expand(-1, -1, x.shape[-1])
+        x = torch.cat([x, z_decode], dim=1)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.linear(torch.flatten(x, start_dim=1))
+        return x, z_mu, z_logvar
+
+
 class MultiClusterModel(nn.Module):
     LED_CHANNELS = 4
     NUM_CLUSTERS = 1
@@ -294,14 +456,15 @@ class MultiClusterModel(nn.Module):
         super(MultiClusterModel, self).__init__()
         self.in_len = in_len
         self.out_len = out_len
-        self.num_input_channels = self.LED_CHANNELS * 2 + self.NUM_CLUSTERS
+        # led_channels, mean(led_channels), num_clusters, pos_encoding 
+        self.num_input_channels = self.LED_CHANNELS * 2 + self.NUM_CLUSTERS + 1
         # Linear
         self.linear_in_len = 1 + (in_len - 1) // (2**num_downsample)
         # L1
         self.l0_num_channels = 50
         self.l1_num_channels = 50
         # CNN parameters
-        self.num_l1_blocks = 2
+        self.num_l1_blocks = 1
         self.num_l2_blocks = num_downsample - 1
         self.num_l3_blocks = 1
         self.expansion = 1
@@ -314,7 +477,7 @@ class MultiClusterModel(nn.Module):
         self.num_recordings = num_recordings
         self.num_clusters = num_clusters
         # HyperResnet
-        warehouse_factor = 4
+        warehouse_factor = 8
         self.hyper_hidden1 = 16
         self.hyper_hidden2 = 16
 
@@ -456,7 +619,7 @@ class DistanceFieldCnnModel(nn.Module):
         self.l1_num_channels = 40
         self.l2_num_channels = 50
         self.l3_num_channels = 100
-        kernel_size = 151
+        kernel_size = 21
         mid_kernel_size = 7
         self.layer0 = nn.Sequential(
             nn.Conv1d(

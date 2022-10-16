@@ -443,8 +443,7 @@ class DistFieldTrainable_(retinapy.train.Trainable):
         res = next(self.model.parameters()).device
         return res
 
-
-    def eval_ms_to_bins(self, ms : float) -> int:
+    def eval_ms_to_bins(self, ms: float) -> int:
         num_bins = max(1, round(ms * (self.sample_rate / 1000)))
         return num_bins
 
@@ -537,14 +536,16 @@ class DistFieldTrainable_(retinapy.train.Trainable):
 
     def input_output_fig(self, sample, model_out, idx):
         target_dist = self.distfield_to_nn_output(sample["dist"][idx])
+
         def cluster_label(sample):
             """Get the cluster label for a sample.
 
-            Used to allow both singel and multi-cluster datasets to use a 
+            Used to allow both singel and multi-cluster datasets to use a
             shared evaluation function.
             """
-            if 'rec_id' in sample:
-                res=(f"rec idx: {sample['rec_id'][idx]},"
+            if "rec_id" in sample:
+                res = (
+                    f"rec idx: {sample['rec_id'][idx]},"
                     f"cluster idx: {sample['cluster_id'][idx]}"
                 )
             else:
@@ -586,7 +587,7 @@ class DistFieldTrainableMC(DistFieldTrainable_):
         # Network output should ideally have mean,sd = (0, 1). Network output
         # 20*exp([-3, 3])  = [1.0, 402], which is a pretty good range, with
         # 20 being the mid point. Is this too low?
-        self.max_eval_count = int(1e5)
+        self.max_eval_count = int(1e6)
 
     def loss(self, m_dist, z_mu, z_lorvar, target):
         batch_size = m_dist.shape[0]
@@ -594,10 +595,31 @@ class DistFieldTrainableMC(DistFieldTrainable_):
         dist_loss = self.dist_loss_fn(m_dist, target)
         kl_loss = -0.5 * torch.sum(1 + z_lorvar - z_mu.pow(2) - z_lorvar.exp())
         β = 1
-        # β = 0
-        batch_loss = dist_loss + β * kl_loss
-        batch_ave_loss = batch_loss / batch_size
-        return batch_ave_loss
+        dist_loss = dist_loss / batch_size
+        kl_loss = β * kl_loss / batch_size
+        total = dist_loss + kl_loss
+        return total, dist_loss, kl_loss
+
+    def all_clusters(self):
+        """
+        Return a Tensor where every row is (rec_idx, cluster_idx, cluster_id).
+        """
+        res = []
+        # This depends on the dataset being a concat dataset.
+        for idx, rec_ds in enumerate(self.train_ds.datasets):
+            recording = rec_ds.recording
+            c_idxs = torch.arange(len(recording.cluster_ids))
+            rec_idx_cidx_cid = torch.stack(
+                [
+                    torch.full_like(c_idxs, idx),
+                    c_idxs,
+                    torch.tensor(recording.cluster_ids, device=c_idxs.device),
+                ],
+                dim=-1,
+            )
+            res.append(rec_idx_cidx_cid)
+        res = torch.cat(res)
+        return res
 
     def encode(
         self, rec_idxs: torch.LongTensor, cluster_idxs: torch.LongTensor
@@ -609,14 +631,22 @@ class DistFieldTrainableMC(DistFieldTrainable_):
             rec_idxs: a batched tensor of recording indexes.
             cluster_idxs: a batch tensor of cluster indexes.
         """
+        # We wrap the to-from device calls here, just for a trial.
         # Maybe we should make a separate non-sampling function, but it's fine
         # for now.
+        in_device = rec_idxs.device
         rec_idxs = rec_idxs.to(self.in_device)
         cluster_idxs = cluster_idxs.to(self.in_device)
         _, z, _ = self.model.encode(rec_idxs, cluster_idxs)
-        return z
+        return z.to(in_device)
 
-    def forward(self, sample):
+    def all_encodings(self):
+        all_clusters = self.all_clusters()
+        zs = self.encode(all_clusters[:, 0], all_clusters[:, 1])
+        res = torch.cat([all_clusters, zs], dim=-1)
+        return res
+
+    def _forward(self, sample):
         masked_snippet = sample["snippet"].float().to(self.in_device)
         dist = sample["dist"].float().to(self.in_device)
         rec_id = sample["rec_id"].int().to(self.in_device)
@@ -624,11 +654,80 @@ class DistFieldTrainableMC(DistFieldTrainable_):
         m_dist, z_mu, z_logvar = self.model(masked_snippet, rec_id, cluster_id)
         # Dist model
         y = self.distfield_to_nn_output(dist)
-        loss = self.loss(m_dist, z_mu, z_logvar, target=y)
+        loss, dist_loss, kl_loss = self.loss(m_dist, z_mu, z_logvar, target=y)
+        return m_dist, loss, dist_loss, kl_loss
+
+    def forward(self, sample):
+        m_dist, loss, _, _ = self._forward(sample)
         return m_dist, loss
 
+    def evaluate(self, val_dl):
+        predictions = defaultdict(list)
+        targets = defaultdict(list)
+        loss_meter = retinapy._logging.Meter("loss")
+        kl_loss_meter = retinapy._logging.Meter("kl-loss")
+        input_output_figs = []
+        for i, sample in enumerate(val_dl):
+            # Don't run out of memory, or take too long.
+            num_so_far = val_dl.batch_size * i
+            if num_so_far > self.max_eval_count:
+                break
+            target_spikes = sample["target_spikes"].float().cuda()
+            model_output, loss, _, kl_loss = self._forward(sample)
+            loss_meter.update(loss.item())
+            kl_loss_meter.update(kl_loss.item())
+            # Count accuracies
+            for eval_len in self.eval_lengths_ms:
+                eval_bins = self.eval_ms_to_bins(eval_len)
+                pred = self.quick_infer(model_output, num_bins=eval_bins)
+                y = torch.sum(target_spikes[:, 0:eval_bins], dim=1)
+                predictions[eval_len].append(pred)
+                targets[eval_len].append(y)
+            # Plot some example input-outputs
+            if len(input_output_figs) < self.num_plots:
+                # Plot the first batch element.
+                idx = 0
+                input_output_figs.append(
+                    self.input_output_fig(sample, model_output, idx)
+                )
 
-class DistFieldTrainable(DistFieldTrainable_):
+        metrics = [
+            retinapy._logging.Metric("loss", loss_meter.avg, increasing=False),
+            retinapy._logging.Metric(
+                "kl-loss", kl_loss_meter.avg, increasing=False
+            ),
+        ]
+        for eval_len in self.eval_lengths_ms:
+            p = torch.cat(predictions[eval_len])
+            t = torch.cat(targets[eval_len])
+            acc = (p == t).float().mean().item()
+            pearson_corr = scipy.stats.pearsonr(
+                p.cpu().numpy(), t.cpu().numpy()
+            )[0]
+            metrics.append(
+                retinapy._logging.Metric(f"accuracy-{eval_len}_ms", acc)
+            )
+            metrics.append(
+                retinapy._logging.Metric(
+                    f"pearson_corr-{eval_len}_ms", pearson_corr
+                )
+            )
+        # Add the latent space visualization.
+        rec_ids, _, cluster_ids, z_xs, z_ys = list(
+            self.all_encodings().T.cpu().numpy()
+        )
+        latent_fig = retinapy.vis.latent_fig(rec_ids, cluster_ids, z_xs, z_ys)
+        results = {
+            "metrics": metrics,
+            "input-output-figs": retinapy._logging.PlotlyFigureList(
+                input_output_figs
+            ),
+            "latent-fig": retinapy._logging.PlotlyFigureList([latent_fig]),
+        }
+        return results
+
+
+class CnnDistFieldTrainable(DistFieldTrainable_):
     def __init__(
         self, train_ds, val_ds, test_ds, model, model_label, eval_lengths
     ):
@@ -697,7 +796,7 @@ def create_multi_cluster_df_datasets(
                 # For the moment, while the validation just takes a small
                 # portion of the validation set.
                 train_val_test_splits,
-                [True, True, False],
+                [False, False, False],
             )
         ]
         train_ds.append(train_val_test_datasets[0])
@@ -786,22 +885,42 @@ class MultiClusterDistFieldTGroup(TrainableGroup):
             f"ds_{config.input_len}in_{config.output_len}out"
         )
 
+    @staticmethod
+    def model_output_len(config) -> int:
+        """Determine the model output length for the required eval length.
+
+        Currently, it's double the eval length. Large model length provides
+        more information to the model while training, and provides the option
+        """
+        min_model_output_ms = 50
+        min_model_output_bins = ms_to_num_bins(
+            min_model_output_ms, config.downsample
+        )
+        eval_len_bins = ms_to_num_bins(config.output_len, config.downsample)
+        model_bins = round(max(min_model_output_bins, eval_len_bins * 2))
+        return model_bins
+
     @classmethod
     def create_trainable(cls, recordings, config):
+        output_len = cls.model_output_len(config)
         train_ds, val_ds, test_ds = create_multi_cluster_df_datasets(
             recordings,
             config.input_len,
-            config.output_len,
+            output_len,
             config.downsample,
         )
+        # There is separation between the target inference duration, say 10ms,
+        # and the output length of the model, say 20ms. The model output should
+        # be at least as large as the target inference duration, and it will
+        # probably benefit in being larger.
         max_num_clusters = max([len(r.cluster_ids) for r in recordings])
-        model = retinapy.models.MultiClusterModel(
-            config.input_len + config.output_len,
-            config.output_len,
+        model = retinapy.models.CatMultiClusterModel(
+            config.input_len + output_len,
+            output_len,
             cls.num_downsample_layers(config.input_len, config.output_len),
             len(recordings),
             max_num_clusters,
-            z_dim=15,
+            z_dim=2,
         )
         res = DistFieldTrainableMC(
             train_ds,
@@ -829,7 +948,10 @@ class MultiClusterDistFieldTGroup(TrainableGroup):
 class DistFieldCnnTGroup(TrainableGroup):
     @staticmethod
     def trainable_label(config):
-        return f"DistFieldCnn-cluster21-{config.downsample}" f"ds_{config.input_len}in"
+        return (
+            f"DistFieldCnn-cluster21-{config.downsample}"
+            f"ds_{config.input_len}in"
+        )
 
     @staticmethod
     def create_trainable(recordings, config):
@@ -840,7 +962,10 @@ class DistFieldCnnTGroup(TrainableGroup):
         cluster_id = 21
         rec = recordings[0].clusters({cluster_id})
         assert len(rec.cluster_ids) == 1
-        # The model only outputs ~200ms. All inference just uses a subset.
+        # There is separation between the target inference duration, say 10ms,
+        # and the output length of the model, say 20ms. The model output should
+        # be at least as large as the target inference duration, and it will
+        # probably benefit in being larger.
         output_lens = {1984: 200, 992: 100, 3174: 400, 1586: 200}
         model_out_len = output_lens[config.input_len]
         train_ds, val_ds, test_ds = create_distfield_datasets(
@@ -851,7 +976,7 @@ class DistFieldCnnTGroup(TrainableGroup):
             config.input_len + model_out_len,
             model_out_len,
         )
-        res = DistFieldTrainable(
+        res = CnnDistFieldTrainable(
             train_ds,
             val_ds,
             test_ds,
@@ -919,14 +1044,16 @@ def _train(out_dir):
     # Load the data.
     # Filter recordings, if requested.
     if opt.recording_names is not None and len(opt.recording_names) == 1:
-        recordings = [mea.single_3brain_recording(
-               opt.recording_names[0],
-               mea.load_stimulus_pattern(opt.stimulus_pattern),
-               mea.load_recorded_stimulus(opt.stimulus),
-               mea.load_response(opt.response),
-               # include_clusters={21, 138},
-               # include_clusters={21, },
-           )]
+        recordings = [
+            mea.single_3brain_recording(
+                opt.recording_names[0],
+                mea.load_stimulus_pattern(opt.stimulus_pattern),
+                mea.load_recorded_stimulus(opt.stimulus),
+                mea.load_response(opt.response),
+                # include_clusters={21, 138},
+                # include_clusters={21, },
+            )
+        ]
     else:
         recordings = mea.load_3brain_recordings(
             opt.stimulus_pattern,
@@ -936,7 +1063,7 @@ def _train(out_dir):
         ## Filter the recording with different sample rate
         skip_rec_names = {"Chicken_21_08_21_Phase_00"}
         recordings = [r for r in recordings if r.name not in skip_rec_names]
-    
+
     done_trainables = set()
     for c in all_configs:
         for tg in trainable_groups.values():

@@ -377,30 +377,30 @@ class Metric:
             return self.value < other_val
 
 
-# Is a generic name-data class enough? Or are specific classes useful?
-# For the moment, let's try use a generic class. Leaving ImageList and
-# PlotlyFigureList here just as examples of the alternative approach.
-
+"""
+Previously, the generic class was used for logging data. However, to use this
+the evaluate() would return a map whose keys were used to interpret the type
+of data. For example, "plotly" meant the value of the dict contained plotly
+figures. This was fine until in addition to the input/output figures, a
+latent space figure was also to be recorded. So either the structure of the
+dict values needed another level, or the keys didn't have to one-to-one with
+a data type. Going with the latter option, we could add a "dtype" string
+parameter to the LogData object, or we could use separate classes. Both seem
+fine. It seems likely that different datatypes might need different or extra
+fields, so lets go with classes for now. As the results dict keys are now
+freed up to be used as labels, the data objects themselves don't need a label.
 
 class LogData:
     def __init__(self, label: str, content: Any):
         self.label = label
         self.content = content
+"""
 
+class PlotlyFigureList:
+    """Wrap one or more Plotly figures for logging (e.g. via Tensorboard)."""
 
-# class ImageList:
-#     """Wrap one or more images for logging (e.g. via Tensorboard)."""
-#
-#     def __init__(self, images):
-#         raise NotImplementedError()
-#
-#
-# class PlotlyFigureList:
-#     """Wrap one or more Plotly figures for logging (e.g. via Tensorboard)."""
-#
-#     def __init__(self, figs, label : str):
-#         self.figs = figs
-#         self.label = label
+    def __init__(self, figs):
+        self.figs = figs
 
 
 class MetricTracker:
@@ -552,8 +552,8 @@ class TbLogger(object):
             # The infamous if-else
             if k == "metrics":
                 self.log_metrics(n_iter, v, log_group)
-            elif k == "plotly":
-                self.log_plotly(n_iter, v, log_group)
+            elif isinstance(v, PlotlyFigureList):
+                self.log_plotly(k, n_iter, v, log_group)
             else:
                 raise ValueError(
                     "Logging the given data is unsupported " f"({data})."
@@ -568,13 +568,13 @@ class TbLogger(object):
     def log_scalar(self, n_iter, name, val, log_group):
         self.writer.add_scalar(self.tag(name, log_group), val, n_iter)
 
-    def log_plotly(self, n_iter, data: LogData, log_group):
-        if not isinstance(data.content, collections.abc.Iterable):
+    def log_plotly(self, label, n_iter, fig_list: PlotlyFigureList, log_group):
+        if not isinstance(fig_list.figs, collections.abc.Iterable):
             raise ValueError("Expected a iterable of plots.")
-        plots_as_arrays = [plotly_fig_to_array(p) for p in data.content]
+        plots_as_arrays = [plotly_fig_to_array(p) for p in fig_list.figs]
         plots_as_array = np.stack(plots_as_arrays)
         self.writer.add_images(
-            self.tag(data.label, log_group),
+            self.tag(label, log_group),
             plots_as_array,
             n_iter,
             dataformats="NHWC",
