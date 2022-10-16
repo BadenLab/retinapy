@@ -486,8 +486,10 @@ def latent_fig(rec_ids : np.ndarray,
         textposition="bottom center",
         mode=mode,
     )
+    fig.add_trace(scatter)
     fig.update_layout({
             "title": {"text": "Latent space, z"},
+            "xaxis": {"range": [-3, 3]},
+            "yaxis": {"range": [-3, 3]},
         })
-    fig.add_trace(scatter)
     return fig
