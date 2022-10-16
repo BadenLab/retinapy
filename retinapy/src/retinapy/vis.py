@@ -468,41 +468,26 @@ def distfield_model_in_out(
     return fig
 
 
-def latent_fig(trainable):
+def latent_fig(rec_ids : np.ndarray, 
+               cluster_ids : np.ndarray, 
+               z_xs :np.ndarray, 
+               z_ys : np.ndarray, use_label=False):
     # 1. Gather the data to plot. We will actually do that here, so this is
     # quite a proactive plotting function.
-    rec_idxs = [0]  # Only supports 1 recording for now.
-    cluster_idxs = []
-    cluster_ids = []
-    with torch.no_grad():
-        for r_idx in rec_idxs:
-            rec = trainable.train_ds.datasets[r_idx].recording
-            cluster_idxs = torch.arange(len(rec.cluster_ids))
-            cluster_idxs.append(np.array(cluster_idxs))
-            rec_idxs.append(torch.full_like(cluster_idxs[-1], r_idx))
-            # For labels, use the cell/cluster-id given by the spike sorter.
-            cluster_ids.extend([rec.cluster_ids[i] for i in cluster_idxs])
-        rec_idxs = torch.concat(rec_idxs)
-        cluster_idxs = torch.concat(cluster_idxs)
-        zs = trainable.encode(rec_idxs, cluster_idxs).cpu().numpy()
-    # 2. Make the figure
     fig = go.Figure()
-    assert zs is not None
-    xs = zs[:, 0]
-    y = zs[:, 1]
     labels = [
-        f"({r_idx}, {c_id})" for (r_idx, c_id) in zip(rec_idxs, cluster_ids)
+        f"({r_idx}, {c_id})" for (r_idx, c_id) in zip(rec_ids, cluster_ids)
     ]
+    mode = "markers+text" if use_label else "markers"
     scatter = go.Scatter(
-        x=xs,
-        y=y,
+        x=z_xs,
+        y=z_ys,
         text=labels,
         textposition="bottom center",
-        mode="markers+text",
+        mode=mode,
     )
+    fig.update_layout({
+            "title": {"text": "Latent space, z"},
+        })
     fig.add_trace(scatter)
-    #fig.update_layout(
-    #    xaxis={"range": [-3, 3]},
-    #    yaxis={"range": [-3, 3]},
-    #)
     return fig
