@@ -8,10 +8,10 @@
 #SBATCH --partition=small
 
 # set max wallclock time
-#SBATCH --time=96:00:00
+#SBATCH --time=120:00:00
 
 # set name of job
-#SBATCH --job-name=vae9dswide
+#SBATCH --job-name=vae_9ds_swide
 
 # set number of GPUs
 #SBATCH --gres=gpu:1
@@ -30,9 +30,10 @@ python ./retinapy_sync/retinapy/src/retinapy/spikeprediction.py \
 	--response ./retinapy_sync/data/ff_spike_response.pickle \
 	--lr 5e-4 \
 	--epochs 50 \
-	--batch-size 128 \
+	--batch-size 64 \
 	--steps-til-eval 10000 \
-	-k MultiClusterDistField-9ds_3174in_198out \
-	--labels exp,1,2,2,vae_wide_9ds
+	-k MultiClusterDistField-18ds_992in_100out \
+	--zdim=20 \
+	--labels exp,1,2,2,vae_wide_18ds_z20d
 
 
