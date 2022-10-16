@@ -672,11 +672,13 @@ def create_multi_cluster_df_datasets(
     val_ds = []
     test_ds = []
     stride = 17
-    dc_recs = mea.decompress_recordings(recordings, downsample=downsample)
-    for rec in dc_recs:
-        train_val_test_splits = mea.mirror_split(
-            rec, split_ratio=SPLIT_RATIO
-        )
+    # Make a queue to save memory by deleting while iterating.
+    dc_recs_queue = mea.decompress_recordings(
+        recordings, downsample=downsample, num_workers=20
+    )
+    while dc_recs_queue:
+        rec = dc_recs_queue.popleft()
+        train_val_test_splits = mea.mirror_split(rec, split_ratio=SPLIT_RATIO)
         snippet_len = input_len + output_len
         train_val_test_datasets = [
             retinapy.dataset.DistFieldDataset(

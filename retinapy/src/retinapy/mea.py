@@ -1,9 +1,20 @@
 from collections import namedtuple
+from collections import deque
 import itertools
 import concurrent.futures
 import logging
 import math
-from typing import Dict, List, Tuple, Union, Sequence, Optional, Set, Iterable
+from typing import (
+    Dict,
+    List,
+    Tuple,
+    Union,
+    Sequence,
+    Optional,
+    Set,
+    Iterable,
+    Deque,
+)
 import pathlib
 import pickle
 import numpy as np
@@ -513,8 +524,8 @@ def single_3brain_recording(
 def decompress_recordings(
     recordings: Iterable[CompressedSpikeRecording],
     downsample: int = 1,
-    num_workers=5,
-) -> List[SpikeRecording]:
+    num_workers=10,
+) -> Deque[SpikeRecording]:
     """
     Decompress multiple recordings.
     """
@@ -526,7 +537,7 @@ def decompress_recordings(
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=num_workers
     ) as executor:
-        res = list(executor.map(_decompress, recordings))
+        res = deque(executor.map(_decompress, recordings))
         executor.shutdown(wait=True)
     return res
 
@@ -938,6 +949,7 @@ def labeled_spike_snippets(
     snippets = np.stack(snippets)
     cluster_ids = np.array(cluster_ids)
     return snippets, cluster_ids
+
 
 def generate_fake_spikes(
     spikes,
