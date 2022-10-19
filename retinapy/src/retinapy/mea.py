@@ -429,10 +429,13 @@ def load_3brain_recordings(
     stimulus_pattern_path: str,
     stimulus_recording_path: str,
     response_recording_path: str,
-    include: Optional[List[str]] = None,
+    include: Optional[Iterable[str]] = None,
 ) -> List[CompressedSpikeRecording]:
     """
     Creates a CompressedSpikeRecording for each recording in the 3Brain data.
+
+    Args:
+        include: a list of recording names to include.
     """
     stimulus_pattern = load_stimulus_pattern(stimulus_pattern_path)
     stimulus_recordings = load_recorded_stimulus(stimulus_recording_path)
