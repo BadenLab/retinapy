@@ -6,7 +6,7 @@ sync {
     source="/home/k/Dropbox/projects/retinapy/",
     host="kxd84-jck11@jade2.hartree.stfc.ac.uk",
     targetdir="/jmain02/home/J2AD005/jck11/kxd84-jck11/retinapy_sync",
-    delay=15, -- seconds to wait while aggregating. Default is 15.
-    exclude={"~", "bin", ".git", ".idea", "mygitignore", "notebooks", "out", ".pytest_cache", "resources", "web", ".*.swp", ".*~", "out" },
+    delay=2, -- seconds to wait while aggregating. Default is 15.
+    exclude={"~", "bin", ".git", ".idea", "mygitignore", "notebooks", "out", ".pytest_cache", "resources", "web", ".*.swp", ".*~", "out", "*.pyc" },
     delete='startup' -- Lsyncd will delete files on target when starting (if needed to keep target folder in sync with source).
 }
