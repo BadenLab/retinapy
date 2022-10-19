@@ -352,7 +352,8 @@ class LabeledConcatDataset(torch.utils.data.Dataset):
 
     @staticmethod
     def cumsum(sequence):
-        r, s = [], 0
+        r = []
+        s = 0
         for e in sequence:
             l = len(e)
             r.append(l + s)
