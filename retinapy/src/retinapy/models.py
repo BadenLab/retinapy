@@ -707,11 +707,13 @@ class DistanceFieldCnnModel(nn.Module):
     def forward(self, x):
         x = self.cat_mean(x)
         x = self.layer0(x)
-        #x = self.layer1(x)
+        # Keep or leave out? Interested to see a justification either way.
+        # x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
         x = self.linear(torch.flatten(x, start_dim=1))
+        # Alternative parameter free head:
         #x = torch.squeeze(F.adaptive_avg_pool1d(x, output_size=self.out_len), dim=1)
         return x
 
