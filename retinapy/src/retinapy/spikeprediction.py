@@ -18,6 +18,7 @@ import retinapy.nn
 import scipy
 import torch
 import plotly.io
+import torchinfo
 
 
 DEFAULT_OUT_BASE_DIR = "./out/"
@@ -78,8 +79,8 @@ def parse_args():
     data_group.add_argument("--stimulus-pattern", type=str, default=None, metavar="FILE", help="Path to stimulus pattern file.")
     data_group.add_argument("--stimulus", type=str, default=None, metavar="FILE", help="Path to stimulus recording file.")
     data_group.add_argument("--response", type=str, default=None, metavar="FILE", help="Path to response recording file.")
-    data_group.add_argument("--recording-names", nargs='+', default=None, help="Names of recordings within the recording file.")
-    data_group.add_argument("--cluster-ids", nargs='+', default=None, help="Cluster ID to train on.")
+    data_group.add_argument("--recording-names", nargs='+', type=str, default=None, help="Names of recordings within the recording file.")
+    data_group.add_argument("--cluster-ids", nargs='+', type=int, default=None, help="Cluster ID to train on.")
 
     parser.add_argument("--steps-til-eval", type=int, default=None, help="Steps until validation.")
     parser.add_argument("--steps-til-log", type=int, default=100, help="How many batches to wait before logging a status update.")
@@ -765,6 +766,14 @@ class CnnDistFieldTrainable(DistFieldTrainable_):
         loss = self.loss(model_output, target=y)
         return model_output, loss
 
+    def model_summary(self, sample):
+        masked_snippet = sample["snippet"].float().cuda()
+        res = torchinfo.summary(self.model, input_data=masked_snippet,
+                                col_names=["input_size", "output_size", 
+                                           "mult_adds", "num_params"],
+                          device=self.in_device, depth=4)
+        return res
+
 
 def create_multi_cluster_df_datasets(
     recordings: Iterable[mea.CompressedSpikeRecording],
@@ -954,18 +963,17 @@ class DistFieldCnnTGroup(TrainableGroup):
     @staticmethod
     def trainable_label(config):
         return (
-            f"DistFieldCnn-cluster21-{config.downsample}"
+            f"DistFieldCnn-{config.downsample}"
             f"ds_{config.input_len}in"
         )
 
     @staticmethod
     def create_trainable(recordings, config):
-        if len(recordings) != 1:
+        if len(recordings) != 1 or len(recordings[0].cluster_ids) != 1:
             raise ValueError(
-                "DistFieldCnn model only supports a single recording."
+                "DistFieldCnn model only supports a single cluster."
             )
-        cluster_id = 21
-        rec = recordings[0].clusters({cluster_id})
+        rec = recordings[0]
         assert len(rec.cluster_ids) == 1
         # There is separation between the target inference duration, say 10ms,
         # and the output length of the model, say 20ms. The model output should
@@ -1048,9 +1056,9 @@ def _train(out_dir):
     # Load the data.
     # Filter recordings, if requested.
     if opt.recording_names is not None and len(opt.recording_names) == 1:
-        # If only one recording, then cluster-id can be specified.
+        # If only one recording, then cluster-ids can be specified.
         if opt.cluster_ids is not None:
-            include_cluster_ids = {opt.cluster_ids}
+            include_cluster_ids = set(opt.cluster_ids)
         else:
             include_cluster_ids = None
         recordings = [
@@ -1059,9 +1067,8 @@ def _train(out_dir):
                 mea.load_stimulus_pattern(opt.stimulus_pattern),
                 mea.load_recorded_stimulus(opt.stimulus),
                 mea.load_response(opt.response),
+                # cluster 21 and 138 have been used for testing regularly.
                 include_clusters=include_cluster_ids,
-                # include_clusters={21, 138},
-                # include_clusters={21, },
             )
         ]
     else:

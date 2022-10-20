@@ -157,12 +157,28 @@ class Trainable:
     def in_device(self):
         """Returns the device on which the model expects input to be located.
 
-        Most likely, the whole model is on a single device, and it is 
+        Most likely, the whole model is on a single device, and it is
         sufficient to use `next(self.model.parameters()).device`.
         """
         raise NotImplementedError("Override")
 
     def __str__(self) -> str:
+        return f"Trainable ({self.label})"
+
+    def model_summary(self, sample) -> str:
+        """Returns a detailed description of the model.
+
+        Args:
+            sample: a training sample given to allow the model structure to
+            be inferred.
+
+        At the moment, this is called by train() with the intent of saving
+        out a file containing info like torchinfo.summary. The torch module
+        input shape isn't known by train(), so the actual summary creation
+        must be done somewhere like Trainable.
+
+        Override this to add more features.
+        """
         return f"Trainable ({self.label})"
 
 
@@ -286,6 +302,22 @@ def train(
     )
     model.train()
     model.cuda()
+    # Before going any further, log model structure.
+    out_file = pathlib.Path(out_dir) / "model_summary.txt"
+    with open(out_file, "w") as f:
+        # This is allowed to fail, as if the model has issues, we want to
+        # get the errors from the actual training forward pass.
+        summary = None
+        try:
+            summary = trainable.model_summary(next(iter(train_dl)))
+        except Exception as e:
+            msg = (
+                "Failed to generating model summary. Exception raised:\n"
+                f"{str(e)}"
+            )
+            _logger.error(msg)
+            summary = msg
+        f.write(str(summary))
 
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=lr, weight_decay=weight_decay
@@ -321,6 +353,7 @@ def train(
         num_evals += 1
         return metrics
 
+    _logger.info("Starting training loop.")
     step = 0
     num_evals = 0
     timers = TrainingTimers.create_and_start()
@@ -383,7 +416,6 @@ def train(
             if timers.recovery.elapsed() > RECOVERY_CKPT_PERIOD_SEC:
                 model_saver.save_recovery()
                 timers.recovery.restart()
-                
 
         _logger.info(
             f"Finished epoch in {round(timers.epoch.elapsed())} secs "

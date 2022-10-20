@@ -662,9 +662,9 @@ class DistanceFieldCnnModel(nn.Module):
         self.layer2_elements = []
         expansion = 1
         num_halves = (
-            4  # There are 2 other downsamples other than the midlayers.
+            3  # There is 1 other downsamples other than the midlayers.
         )
-        for i in range(num_halves - 2):
+        for i in range(num_halves - 1):
             self.layer2_elements.append(
                 retinapy.nn.ResBlock1d(
                     self.l2_num_channels,
@@ -690,7 +690,7 @@ class DistanceFieldCnnModel(nn.Module):
             padding=2,
             bias=True,
         )
-        linear_in_len = 1 + (in_len - 1) // 2 ** (num_halves - 1)
+        linear_in_len = 1 + (in_len - 1) // 2 ** num_halves
         self.linear = nn.Linear(
             in_features=linear_in_len,
             out_features=self.out_len,
