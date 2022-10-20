@@ -977,7 +977,6 @@ class DistFieldCnnTGroup(TrainableGroup):
             rec, config.input_len, model_out_len, config.downsample
         )
         model = retinapy.models.DistanceFieldCnnModel(
-            DIST_CLAMP_MS,
             config.input_len + model_out_len,
             model_out_len,
         )

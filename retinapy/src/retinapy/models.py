@@ -618,13 +618,12 @@ class DistanceFieldCnnModel(nn.Module):
     LED_CHANNELS = 4
     NUM_CLUSTERS = 1
 
-    def __init__(self, clamp_max, in_len, out_len):
+    def __init__(self, in_len, out_len):
         super(DistanceFieldCnnModel, self).__init__()
         self.in_len = in_len
         self.out_len = out_len
         # led_channels, mean(led_channels), num_clusters, pos_encoding 
         self.num_input_channels = self.LED_CHANNELS * 2 + self.NUM_CLUSTERS + 1
-        self.clamp_max = clamp_max
         self.l1_num_channels = 50
         self.l2_num_channels = 50
         self.l3_num_channels = 100
@@ -639,13 +638,12 @@ class DistanceFieldCnnModel(nn.Module):
                 padding=(kernel_size - 1) // 2,
                 bias=True,
             ),
-            # nn.BatchNorm1d(self.l1_num_channels),
             nn.LeakyReLU(0.2, True),
             nn.Conv1d(
                 self.l1_num_channels,
                 self.l1_num_channels,
                 kernel_size=kernel_size,
-                stride=1,  # was 2.
+                stride=1,
                 padding=(kernel_size - 1) // 2,
                 bias=False,
             ),
