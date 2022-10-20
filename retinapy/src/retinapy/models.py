@@ -342,8 +342,8 @@ class CatMultiClusterModel(nn.Module):
         self.num_l1_blocks = num_downsample - 1
         self.num_l2_blocks = 3
         self.expansion = 2
-        self.l1_num_channels = 400
-        self.l2_num_channels = 500
+        self.l1_num_channels = 100
+        self.l2_num_channels = 200
         kernel_size = 21
         mid_kernel_size = 7
         # VAE
@@ -625,7 +625,7 @@ class DistanceFieldCnnModel(nn.Module):
         # led_channels, mean(led_channels), num_clusters, pos_encoding 
         self.num_input_channels = self.LED_CHANNELS * 2 + self.NUM_CLUSTERS + 1
         self.clamp_max = clamp_max
-        self.l1_num_channels = 40
+        self.l1_num_channels = 50
         self.l2_num_channels = 50
         self.l3_num_channels = 100
         kernel_size = 21
@@ -707,11 +707,12 @@ class DistanceFieldCnnModel(nn.Module):
     def forward(self, x):
         x = self.cat_mean(x)
         x = self.layer0(x)
-        x = self.layer1(x)
+        #x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
         x = self.linear(torch.flatten(x, start_dim=1))
+        #x = torch.squeeze(F.adaptive_avg_pool1d(x, output_size=self.out_len), dim=1)
         return x
 
 

@@ -79,7 +79,7 @@ def parse_args():
     data_group.add_argument("--stimulus", type=str, default=None, metavar="FILE", help="Path to stimulus recording file.")
     data_group.add_argument("--response", type=str, default=None, metavar="FILE", help="Path to response recording file.")
     data_group.add_argument("--recording-names", nargs='+', default=None, help="Names of recordings within the recording file.")
-    data_group.add_argument("--cluster-id", type=int, default=None, help="Cluster ID to train on.")
+    data_group.add_argument("--cluster-ids", nargs='+', default=None, help="Cluster ID to train on.")
 
     parser.add_argument("--steps-til-eval", type=int, default=None, help="Steps until validation.")
     parser.add_argument("--steps-til-log", type=int, default=100, help="How many batches to wait before logging a status update.")
@@ -91,6 +91,8 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=8, metavar="N", help="number of epochs to train (default: 300)")
     parser.add_argument("--batch-size", type=int, default=128, help="batch size")
     parser.add_argument("--zdim", type=int, default=2, help="VAE latent dimension")
+    parser.add_argument("--vae-beta", type=float, default=0.01, help="VAE beta parameter.")
+    parser.add_argument("--stride", type=int, default=17, help="Dataset stride.")
     # fmt: on
 
     # First check if we have a config file to deal with.
@@ -529,8 +531,8 @@ class DistFieldTrainable_(retinapy.train.Trainable):
             )
         results = {
             "metrics": metrics,
-            "plotly": retinapy._logging.LogData(
-                "input-output-fig", plotly_figs
+            "input-output-figs": retinapy._logging.PlotlyFigureList(
+                plotly_figs
             ),
         }
         return results
@@ -595,8 +597,9 @@ class DistFieldTrainableMC(DistFieldTrainable_):
         # Scale to get roughly in the ballpark of 1.
         dist_loss = self.dist_loss_fn(m_dist, target)
         kl_loss = -0.5 * torch.sum(1 + z_lorvar - z_mu.pow(2) - z_lorvar.exp())
-        β = 1
         dist_loss = dist_loss / batch_size
+        #β = 1/1000
+        β = opt.vae_beta
         kl_loss = β * kl_loss / batch_size
         total = dist_loss + kl_loss
         return total, dist_loss, kl_loss
@@ -772,7 +775,7 @@ def create_multi_cluster_df_datasets(
     train_ds = []
     val_ds = []
     test_ds = []
-    stride = 17
+    stride = 17 #opt.stride
     # Make a queue to save memory by deleting while iterating.
     dc_recs_queue = mea.decompress_recordings(
         recordings, downsample=downsample, num_workers=20
@@ -922,7 +925,7 @@ class MultiClusterDistFieldTGroup(TrainableGroup):
             cls.num_downsample_layers(config.input_len, config.output_len),
             len(recordings),
             max_num_clusters,
-            z_dim=opt.zdim,
+            z_dim=2,#opt.zdim,
         )
         res = DistFieldTrainableMC(
             train_ds,
@@ -1046,12 +1049,18 @@ def _train(out_dir):
     # Load the data.
     # Filter recordings, if requested.
     if opt.recording_names is not None and len(opt.recording_names) == 1:
+        # If only one recording, then cluster-id can be specified.
+        if opt.cluster_ids is not None:
+            include_cluster_ids = {opt.cluster_ids}
+        else:
+            include_cluster_ids = None
         recordings = [
             mea.single_3brain_recording(
                 opt.recording_names[0],
                 mea.load_stimulus_pattern(opt.stimulus_pattern),
                 mea.load_recorded_stimulus(opt.stimulus),
                 mea.load_response(opt.response),
+                include_clusters=include_cluster_ids,
                 # include_clusters={21, 138},
                 # include_clusters={21, },
             )
