@@ -319,11 +319,9 @@ class DistFieldDataset(torch.utils.data.Dataset):
         spikes = extra_long_spikes[0 : -self.pad]
         # 5. Normalize
         stimulus_norm = self.normalize_stimulus(stimulus)
-        # 6. Position encoding.
-        pos_enc = (np.arange(len(spikes)) - self.mask_slice.start) / len(spikes)
         # TODO: what about cheating? Why now?
-        # 7. Stack 
-        snippet = np.vstack((stimulus_norm, pos_enc, spikes))
+        # 6. Stack 
+        snippet = np.vstack((stimulus_norm, spikes))
         # Returning a dictionary is more flexible than returning a tuple, as
         # we can add to the dictionary without breaking existing consumers of
         # the dataset.
