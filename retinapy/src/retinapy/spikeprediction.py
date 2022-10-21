@@ -578,7 +578,48 @@ class DistFieldTrainable_(retinapy.train.Trainable):
         return fig
 
 
-class DistFieldTrainableMC(DistFieldTrainable_):
+class TransformerTrainable(DistFieldTrainable_):
+    def __init__(
+        self, train_ds, val_ds, test_ds, model, model_label, eval_lengths
+    ):
+        super().__init__(
+            train_ds, val_ds, test_ds, model, model_label, eval_lengths
+        )
+        self.dist_loss_fn = retinapy.models.dist_loss
+
+    def loss(self, m_dist, target):
+        batch_size = m_dist.shape[0]
+        batch_sum = retinapy.models.dist_loss(m_dist, target)
+        batch_ave = batch_sum / batch_size
+        return batch_ave
+
+    def forward(self, sample):
+        # Don't use the position encoding. # TODO: remove it at some point.
+        masked_snippet = (
+            sample["snippet"][:, 0 : mea.NUM_STIMULUS_LEDS + 1].float().cuda()
+        )
+        dist = sample["dist"].float().cuda()
+        model_output = self.model(masked_snippet)
+        # Dist model
+        y = self.distfield_to_nn_output(dist)
+        loss = self.loss(model_output, target=y)
+        return model_output, loss
+
+    def model_summary(self, sample):
+        masked_snippet = (
+            sample["snippet"][:, 0 : mea.NUM_STIMULUS_LEDS + 1].float().cuda()
+        )
+        res = torchinfo.summary(
+            self.model,
+            input_data=masked_snippet,
+            col_names=["input_size", "output_size", "mult_adds", "num_params"],
+            device=self.in_device,
+            depth=4,
+        )
+        return res
+
+
+class DistFieldVAETrainable(DistFieldTrainable_):
     def __init__(
         self, train_ds, val_ds, test_ds, model, model_label, eval_lengths
     ):
@@ -605,7 +646,7 @@ class DistFieldTrainableMC(DistFieldTrainable_):
         dist_loss = self.dist_loss_fn(m_dist, target)
         kl_loss = -0.5 * torch.sum(1 + z_lorvar - z_mu.pow(2) - z_lorvar.exp())
         dist_loss = dist_loss / batch_size
-        #β = 1/1000
+        # β = 1/1000
         β = opt.vae_beta
         kl_loss = β * kl_loss / batch_size
         total = dist_loss + kl_loss
@@ -632,6 +673,23 @@ class DistFieldTrainableMC(DistFieldTrainable_):
         res = torch.cat(res)
         return res
 
+    def model_summary(self, sample):
+        masked_snippet = (
+            sample["snippet"][:, 0 : mea.NUM_STIMULUS_LEDS + 1]
+            .float()
+            .to(self.in_device)
+        )
+        rec_id = sample["rec_id"].to(self.in_device)
+        cluster_id = sample["cluster_id"].to(self.in_device)
+        res = torchinfo.summary(
+            self.model,
+            input_data=[masked_snippet, rec_id, cluster_id],
+            col_names=["input_size", "output_size", "mult_adds", "num_params"],
+            device=self.in_device,
+            depth=4,
+        )
+        return res
+
     def encode(
         self, rec_idxs: torch.LongTensor, cluster_idxs: torch.LongTensor
     ):
@@ -648,7 +706,7 @@ class DistFieldTrainableMC(DistFieldTrainable_):
         in_device = rec_idxs.device
         rec_idxs = rec_idxs.to(self.in_device)
         cluster_idxs = cluster_idxs.to(self.in_device)
-        _, z, _ = self.model.encode(rec_idxs, cluster_idxs)
+        _, z, _ = self.model.encode_vae(rec_idxs, cluster_idxs)
         return z.to(in_device)
 
     def all_encodings(self):
@@ -734,8 +792,12 @@ class DistFieldTrainableMC(DistFieldTrainable_):
             rec_ids, _, cluster_ids, z_xs, z_ys = list(
                 self.all_encodings().T.cpu().numpy()
             )
-            latent_fig = retinapy.vis.latent_fig(rec_ids, cluster_ids, z_xs, z_ys)
-            results["latent-fig"] = retinapy._logging.PlotlyFigureList([latent_fig])
+            latent_fig = retinapy.vis.latent_fig(
+                rec_ids, cluster_ids, z_xs, z_ys
+            )
+            results["latent-fig"] = retinapy._logging.PlotlyFigureList(
+                [latent_fig]
+            )
         return results
 
 
@@ -765,7 +827,6 @@ class CnnDistFieldTrainable(DistFieldTrainable_):
     def forward(self, sample):
         masked_snippet = sample["snippet"].float().cuda()
         dist = sample["dist"].float().cuda()
-        masked_snippet = masked_snippet.float().cuda()
         model_output = self.model(masked_snippet)
         # Dist model
         y = self.distfield_to_nn_output(dist)
@@ -774,10 +835,13 @@ class CnnDistFieldTrainable(DistFieldTrainable_):
 
     def model_summary(self, sample):
         masked_snippet = sample["snippet"].float().cuda()
-        res = torchinfo.summary(self.model, input_data=masked_snippet,
-                                col_names=["input_size", "output_size", 
-                                           "mult_adds", "num_params"],
-                          device=self.in_device, depth=4)
+        res = torchinfo.summary(
+            self.model,
+            input_data=masked_snippet,
+            col_names=["input_size", "output_size", "mult_adds", "num_params"],
+            device=self.in_device,
+            depth=4,
+        )
         return res
 
 
@@ -965,13 +1029,53 @@ class MultiClusterDistFieldTGroup(TrainableGroup):
         return num_downsample
 
 
+class TransformerTGroup(TrainableGroup):
+    @staticmethod
+    def trainable_label(config):
+        return f"Transformer-{config.downsample}" f"ds_{config.input_len}in"
+
+    @staticmethod
+    def create_trainable(recordings, config, opt):
+        # There is separation between the target inference duration, say 10ms,
+        # and the output length of the model, say 20ms. The model output should
+        # be at least as large as the target inference duration, and it will
+        # probably benefit in being larger.
+        output_lens = {1984: 200, 992: 100, 3174: 400, 1586: 200}
+        model_out_len = output_lens[config.input_len]
+        train_ds, val_ds, test_ds = create_multi_cluster_df_datasets(
+            recordings,
+            config.input_len,
+            model_out_len,
+            config.downsample,
+            stride=opt.stride,
+        )
+        max_num_clusters = max([len(r.cluster_ids) for r in recordings])
+        model = retinapy.models.TransformerModel(
+            config.input_len,
+            model_out_len,
+            stim_downsample=5,
+            num_recordings=len(recordings),
+            num_clusters=max_num_clusters,
+            z_dim=opt.zdim,
+            num_heads=opt.num_heads,
+            head_dim=opt.head_dim,
+            num_tlayers=opt.num_tlayers,
+        )
+        res = DistFieldVAETrainable(
+            train_ds,
+            val_ds,
+            test_ds,
+            model,
+            DistFieldCnnTGroup.trainable_label(config),
+            eval_lengths=[10, 20, 50],
+        )
+        return res
+
+
 class DistFieldCnnTGroup(TrainableGroup):
     @staticmethod
     def trainable_label(config):
-        return (
-            f"DistFieldCnn-{config.downsample}"
-            f"ds_{config.input_len}in"
-        )
+        return f"DistFieldCnn-{config.downsample}" f"ds_{config.input_len}in"
 
     @staticmethod
     def create_trainable(recordings, config):
@@ -1033,6 +1137,7 @@ def _train(out_dir, opt):
         "LinearNonLinear": LinearNonLinearTGroup,
         "DistFieldCnn": DistFieldCnnTGroup,
         "MultiClusterDistField": MultiClusterDistFieldTGroup,
+        "Transformer": TransformerTGroup,
     }
 
     def run_id(model_str, config):

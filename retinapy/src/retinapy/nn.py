@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import math
+import einops
 
 
 def create_batch_norm(n):
@@ -146,7 +147,7 @@ class ResBlock1d(nn.Module):
             dilation=1,
             bias=False,
         )
-        # To use batch norm or group norm? 
+        # To use batch norm or group norm?
         self.bn1 = create_batch_norm(mid_n)
         self.bn2 = create_batch_norm(mid_n)
         self.bn3 = create_batch_norm(out_n)
@@ -537,7 +538,6 @@ class HyperResDecoder(nn.Module):
         self.fcA2.bias.data.fill_(0.0)
         self.fcA3.bias.data.fill_(0.0)
 
-
     def forward(self, x, z):
         batch_size = x.shape[0]
         h = torch.relu(self.fc1(z))
@@ -548,7 +548,8 @@ class HyperResDecoder(nn.Module):
                 batch_size,
                 self.hyper_res_block.mid_n,
                 self.hyper_res_block.mid_warehouse_n,
-            ) / key_scale,
+            )
+            / key_scale,
             dim=2,
         )
         att2 = F.softmax(
@@ -556,7 +557,8 @@ class HyperResDecoder(nn.Module):
                 batch_size,
                 self.hyper_res_block.mid_n,
                 self.hyper_res_block.mid_warehouse_n,
-            ) / key_scale,
+            )
+            / key_scale,
             dim=2,
         )
         att3 = F.softmax(
@@ -564,7 +566,8 @@ class HyperResDecoder(nn.Module):
                 batch_size,
                 self.hyper_res_block.out_n,
                 self.hyper_res_block.out_warehouse_n,
-            ) / key_scale,
+            )
+            / key_scale,
             dim=2,
         )
         x = self.hyper_res_block(x, att1, att2, att3)
@@ -706,3 +709,61 @@ class HyperResBlock1d(nn.Module):
         # x = F.relu(self.bn2(self.conv2(x)))
         # x = self.bn3(self.conv3(x))
         # x = F.relu(x + shortcut)
+
+
+class Attention(nn.Module):
+    """
+    Partly copied from:
+        https://github.com/lucidrains/vit-pytorch/blob/main/vit_pytorch/simple_vit.py
+    """
+
+    def __init__(self, embed_dim, num_heads, head_dim):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        inner_dim = self.num_heads * head_dim
+        self.norm = nn.LayerNorm(self.embed_dim)
+        self.to_qkv = nn.Linear(self.embed_dim, 3 * inner_dim, bias=False)
+        self.to_out = nn.Linear(inner_dim, self.embed_dim, bias=False)
+
+    def forward(self, x):
+        x = self.norm(x)
+        q, k, v = self.to_qkv(x).chunk(3, dim=-1)
+        q, k, v = map(
+            lambda t: einops.rearrange(
+                t, "b n (h d) -> b h n d", h=self.num_heads
+            ),
+            [q, k, v],
+        )
+        attn = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.shape[-1]))
+        attn = F.softmax(attn, dim=-1)
+        y = attn @ v
+        y = einops.rearrange(y, "b h n d -> b n (h d)")
+        y = self.to_out(y)
+        return y
+
+
+class Transformer(nn.Module):
+    def __init__(self, embed_dim, num_layers, num_heads, head_dim, mlp_dim):
+        super().__init__()
+        self.layers = nn.ModuleList([])
+        for _ in range(num_layers):
+            self.layers.append(
+                nn.ModuleDict(
+                    {
+                        "attn": Attention(embed_dim, num_heads, head_dim),
+                        "ff": nn.Sequential(
+                            nn.LayerNorm(embed_dim),
+                            nn.Linear(embed_dim, mlp_dim),
+                            nn.GELU(),
+                            nn.Linear(mlp_dim, embed_dim),
+                        ),
+                    }
+                )
+            )
+
+    def forward(self, x):
+        for layer in self.layers:
+            x = layer["attn"](x) + x
+            x = layer["ff"](x) + x
+        return x

@@ -3,6 +3,8 @@ import torch.nn as nn
 from torch.nn import functional as F
 from typing import Union
 import pathlib
+import einops
+import einops.layers.torch
 
 import retinapy
 import retinapy.mea as mea
@@ -134,6 +136,7 @@ class MiniVAE(nn.Module):
         else:
             z = z_mu
         return z, z_mu, z_logvar
+
 
 class VAE(nn.Module):
     def __init__(self, num_clusters, z_n=2, h1_n=16, h2_n=32, out_n=5):
@@ -300,7 +303,7 @@ class MultiClusterModel2(nn.Module):
             self.z_dim, total_num_channels, self.key_len
         )
 
-    def encode(self, rec_id, cluster_id):
+    def encode_vae(self, rec_id, cluster_id):
         id_ = rec_id * self.num_clusters + cluster_id
         z, z_mu, z_logvar = self.vae(id_)
         return z, z_mu, z_logvar
@@ -309,7 +312,7 @@ class MultiClusterModel2(nn.Module):
         # Layer 0
         x = self.layer0(snippet)
         # VAE
-        z, z_mu, z_logvar = self.encode(rec_id, cluster_id)
+        z, z_mu, z_logvar = self.encode_vae(rec_id, cluster_id)
         # Queries
         queries = self.query_decoder(z)
         weights_W, weights_b = self.warehouse(queries)
@@ -327,8 +330,14 @@ class CatMultiClusterModel(nn.Module):
     NUM_CLUSTERS = 1
 
     def __init__(
-        self, in_len, out_len, num_downsample, num_recordings, num_clusters,
-        z_dim=2):
+        self,
+        in_len,
+        out_len,
+        num_downsample,
+        num_recordings,
+        num_clusters,
+        z_dim=2,
+    ):
         super().__init__()
         self.in_len = in_len
         self.out_len = out_len
@@ -366,7 +375,7 @@ class CatMultiClusterModel(nn.Module):
                 self.l0_num_channels,
                 self.l0_num_channels,
                 kernel_size=kernel_size,
-                stride=1,  
+                stride=1,
                 padding=kernel_size // 2,
                 bias=False,
             ),
@@ -408,7 +417,8 @@ class CatMultiClusterModel(nn.Module):
             kernel_size=3,
             stride=1,
             padding=1,
-            bias=True)
+            bias=True,
+        )
 
         linear_in_len = 1 + (in_len - 1) // (2**num_downsample)
         self.linear = nn.Linear(
@@ -416,10 +426,11 @@ class CatMultiClusterModel(nn.Module):
             out_features=self.out_len,
         )
         # VAE
-        self.vae = VAE(num_recordings * num_clusters, z_n=self.z_dim, 
-                           out_n=self.n_vae_out)
+        self.vae = VAE(
+            num_recordings * num_clusters, z_n=self.z_dim, out_n=self.n_vae_out
+        )
 
-    def encode(self, rec_id, cluster_id):
+    def encode_vae(self, rec_id, cluster_id):
         id_ = rec_id * self.num_clusters + cluster_id
         z_decode, z_mu, z_logvar = self.vae(id_)
         return z_decode, z_mu, z_logvar
@@ -432,8 +443,11 @@ class CatMultiClusterModel(nn.Module):
     #     return x
 
     def cat_mean(self, snippet):
-        m = snippet[:,0:mea.NUM_STIMULUS_LEDS].mean(dim=2, keepdim=True).expand(
-                -1, -1, snippet.shape[-1])
+        m = (
+            snippet[:, 0 : mea.NUM_STIMULUS_LEDS]
+            .mean(dim=2, keepdim=True)
+            .expand(-1, -1, snippet.shape[-1])
+        )
         x = torch.cat([snippet, m], dim=1)
         return x
 
@@ -446,7 +460,7 @@ class CatMultiClusterModel(nn.Module):
         # VAE
         x = self.cat_mean(snippet)
         x = self.layer0(x)
-        z_decode, z_mu, z_logvar = self.encode(rec_id, cluster_id)
+        z_decode, z_mu, z_logvar = self.encode_vae(rec_id, cluster_id)
         x = self.cat_z(x, z_decode)
         x = self.layer1(x)
         x = self.layer2(x)
@@ -460,12 +474,18 @@ class MultiClusterModel(nn.Module):
     NUM_CLUSTERS = 1
 
     def __init__(
-        self, in_len, out_len, num_downsample, num_recordings, num_clusters,
-        z_dim=2):
+        self,
+        in_len,
+        out_len,
+        num_downsample,
+        num_recordings,
+        num_clusters,
+        z_dim=2,
+    ):
         super(MultiClusterModel, self).__init__()
         self.in_len = in_len
         self.out_len = out_len
-        # led_channels, mean(led_channels), num_clusters, pos_encoding 
+        # led_channels, mean(led_channels), num_clusters, pos_encoding
         self.num_input_channels = self.LED_CHANNELS * 2 + self.NUM_CLUSTERS + 1
         # Linear
         self.linear_in_len = 1 + (in_len - 1) // (2**num_downsample)
@@ -504,7 +524,7 @@ class MultiClusterModel(nn.Module):
                 self.l0_num_channels,
                 self.l0_num_channels,
                 kernel_size=kernel_size,
-                stride=1,  
+                stride=1,
                 padding=kernel_size // 2,
                 bias=False,
             ),
@@ -580,7 +600,7 @@ class MultiClusterModel(nn.Module):
         # VAE
         self.vae = MiniVAE(num_recordings * num_clusters, z_n=self.z_dim)
 
-    def encode(self, rec_id, cluster_id):
+    def encode_vae(self, rec_id, cluster_id):
         id_ = rec_id * self.num_clusters + cluster_id
         z, z_mu, z_logvar = self.vae(id_)
         return z, z_mu, z_logvar
@@ -593,8 +613,11 @@ class MultiClusterModel(nn.Module):
     #     return x
 
     def cat_mean(self, snippet):
-        m = snippet[:,0:-1].mean(dim=2, keepdim=True).expand(
-                -1, -1, snippet.shape[-1])
+        m = (
+            snippet[:, 0:-1]
+            .mean(dim=2, keepdim=True)
+            .expand(-1, -1, snippet.shape[-1])
+        )
         x = torch.cat([snippet, m], dim=1)
         return x
 
@@ -602,7 +625,7 @@ class MultiClusterModel(nn.Module):
         x = self.cat_mean(snippet)
         x = self.layer0(x)
         # VAE
-        z, z_mu, z_logvar = self.encode(rec_id, cluster_id)
+        z, z_mu, z_logvar = self.encode_vae(rec_id, cluster_id)
         # Hyper
         for l in self.layer1:
             x = l(x, z)
@@ -614,6 +637,128 @@ class MultiClusterModel(nn.Module):
         return x, z_mu, z_logvar
 
 
+class TransformerModel(nn.Module):
+    def __init__(
+        self, in_len, out_len, stim_downsample, num_recordings, num_clusters,
+        z_dim=2, num_heads=8, head_dim=64, num_tlayers=6):
+        super().__init__()
+        self.num_recordings = num_recordings
+        self.num_clusters = num_clusters
+        self.z_dim = z_dim
+        # Stimulus CNN
+        k0_size = 21
+        k1_size = 7
+        expansion = 1
+        self.l0a_num_channels = 10
+        self.l0b_num_channels = 20
+        self.l1_num_channels = 100
+        self.cnn = nn.Sequential(
+            nn.Conv1d(
+                mea.NUM_STIMULUS_LEDS * 2,  # stimulus + mean(stimulus)
+                self.l0a_num_channels,
+                kernel_size=k0_size,
+                stride=2,
+                padding=(k0_size - 1) // 2,
+                bias=True,
+            ),
+            nn.LeakyReLU(0.2, True),
+            nn.Conv1d(
+                self.l0a_num_channels,
+                self.l0b_num_channels,
+                kernel_size=k0_size,
+                stride=1,
+                padding=(k0_size - 1) // 2,
+                bias=False,
+            ),
+            retinapy.nn.create_batch_norm(self.l0b_num_channels),
+            nn.LeakyReLU(0.2, True),
+            *[
+                retinapy.nn.ResBlock1d(
+                    self.l1_num_channels if i else self.l0b_num_channels,
+                    self.l1_num_channels * expansion,
+                    self.l1_num_channels,
+                    kernel_size=k1_size,
+                    downsample=True,
+                )
+                for i in range(stim_downsample - 1)
+            ],
+        )
+        
+        self.embed_dim = 128
+        # VAE
+        self.vae = VAE(
+            self.num_recordings * self.num_clusters, 
+            z_n=self.z_dim, 
+            h1_n=32,
+            h2_n=32,
+            out_n=self.embed_dim)
+        # Transformer
+        self.patch_len = 8
+        self.stim_embed = nn.Conv1d(
+            self.l1_num_channels, self.embed_dim, kernel_size=1
+        )
+        # Normally initialized nn.Parameter
+        # 1092 = 992 + 100
+        self.in_len = in_len
+        in_stim_len = in_len + out_len
+        enc_stim_len = 1 + (in_stim_len - 1) // (2**stim_downsample)
+        enc_spikes_len = in_len // self.patch_len
+        enc_len = enc_stim_len + enc_spikes_len + 1 # 1 for VAE encoding.
+        self.pos_embed = nn.Parameter(torch.randn(enc_len, self.embed_dim))
+
+        self.spikes_embed = nn.Linear(self.patch_len, self.embed_dim)
+        mlp_expansion = 3
+        self.transformer = retinapy.nn.Transformer(
+            self.embed_dim,
+            num_layers=num_tlayers,
+            num_heads=num_heads,
+            head_dim=head_dim,
+            mlp_dim=self.embed_dim * mlp_expansion,
+        )
+        self.decode = nn.Sequential(
+            nn.Linear(self.embed_dim, 1),
+            einops.layers.torch.Rearrange("b c 1 -> b c"),
+            nn.Linear(enc_len, out_len),
+        )
+
+    def cat_mean(self, stim):
+        m = (
+            stim[:, 0 : mea.NUM_STIMULUS_LEDS]
+            .mean(dim=2, keepdim=True)
+            .expand(-1, -1, stim.shape[-1])
+        )
+        x = torch.cat([stim, m], dim=1)
+        return x
+
+    def encode_stimulus(self, stim):
+        x = self.cat_mean(stim)
+        x = self.cnn(x)
+        x = self.stim_embed(x)
+        x = einops.rearrange(x, "b c l -> b l c")
+        return x
+
+    def encode_spikes(self, spikes):
+        x = einops.rearrange(spikes, "b (t c) -> b t c", c=self.patch_len)
+        x = self.spikes_embed(x)
+        return x
+
+    def encode_vae(self, rec_id, cluster_id):
+        id_ = rec_id * self.num_clusters + cluster_id
+        z_decode, z_mu, z_logvar = self.vae(id_)
+        return z_decode, z_mu, z_logvar
+
+    def forward(self, snippet, rec_id, cluster_id):
+        z_decode, z_mu, z_logvar = self.encode_vae(rec_id, cluster_id)
+        x_stim = self.encode_stimulus(snippet[:, 0:-1])
+        x_spikes = self.encode_spikes(snippet[:, -1][:, : self.in_len])
+        z = einops.rearrange(z_decode, "b c -> b () c")
+        x = torch.cat([x_stim, x_spikes, z], dim=1)
+        x = x + self.pos_embed
+        x = self.transformer(x)
+        x = self.decode(x)
+        return x, z_mu, z_logvar
+
+
 class DistanceFieldCnnModel(nn.Module):
     LED_CHANNELS = 4
     NUM_CLUSTERS = 1
@@ -622,7 +767,7 @@ class DistanceFieldCnnModel(nn.Module):
         super(DistanceFieldCnnModel, self).__init__()
         self.in_len = in_len
         self.out_len = out_len
-        # led_channels, mean(led_channels), num_clusters, pos_encoding 
+        # led_channels, mean(led_channels), num_clusters, pos_encoding
         self.num_input_channels = self.LED_CHANNELS * 2 + self.NUM_CLUSTERS + 1
         self.l1_num_channels = 50
         self.l2_num_channels = 50
@@ -661,9 +806,7 @@ class DistanceFieldCnnModel(nn.Module):
         )
         self.layer2_elements = []
         expansion = 1
-        num_halves = (
-            3  # There is 1 other downsamples other than the midlayers.
-        )
+        num_halves = 3  # There is 1 other downsamples other than the midlayers.
         for i in range(num_halves - 1):
             self.layer2_elements.append(
                 retinapy.nn.ResBlock1d(
@@ -690,15 +833,18 @@ class DistanceFieldCnnModel(nn.Module):
             padding=2,
             bias=True,
         )
-        linear_in_len = 1 + (in_len - 1) // 2 ** num_halves
+        linear_in_len = 1 + (in_len - 1) // 2**num_halves
         self.linear = nn.Linear(
             in_features=linear_in_len,
             out_features=self.out_len,
         )
 
     def cat_mean(self, snippet):
-        m = snippet[:,0:mea.NUM_STIMULUS_LEDS].mean(dim=2, keepdim=True).expand(
-                -1, -1, snippet.shape[-1])
+        m = (
+            snippet[:, 0 : mea.NUM_STIMULUS_LEDS]
+            .mean(dim=2, keepdim=True)
+            .expand(-1, -1, snippet.shape[-1])
+        )
         x = torch.cat([snippet, m], dim=1)
         return x
 
@@ -712,7 +858,7 @@ class DistanceFieldCnnModel(nn.Module):
         x = self.layer4(x)
         x = self.linear(torch.flatten(x, start_dim=1))
         # Alternative parameter free head:
-        #x = torch.squeeze(F.adaptive_avg_pool1d(x, output_size=self.out_len), dim=1)
+        # x = torch.squeeze(F.adaptive_avg_pool1d(x, output_size=self.out_len), dim=1)
         return x
 
 
