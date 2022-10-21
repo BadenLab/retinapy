@@ -91,10 +91,15 @@ def parse_args():
     parser.add_argument("--labels", type=str, default=None, help="List of experiment labels. Used for naming files and/or subfolders.")
     parser.add_argument("--epochs", type=int, default=8, metavar="N", help="number of epochs to train (default: 300)")
     parser.add_argument("--batch-size", type=int, default=128, help="batch size")
-    parser.add_argument("--zdim", type=int, default=2, help="VAE latent dimension")
-    parser.add_argument("--vae-beta", type=float, default=0.01, help="VAE beta parameter.")
-    parser.add_argument("--stride", type=int, default=17, help="Dataset stride.")
     parser.add_argument("--num-workers", type=int, default=24, help="Number of workers for data loading.")
+
+    model_group = parser.add_argument_group("Model options")
+    model_group.add_argument("--zdim", type=int, default=2, help="VAE latent dimension")
+    model_group.add_argument("--vae-beta", type=float, default=0.01, help="VAE beta parameter.")
+    model_group.add_argument("--stride", type=int, default=17, help="Dataset stride.")
+    model_group.add_argument("--num-heads", type=int, default=8, help="Number of transformer heads.")
+    model_group.add_argument("--head-dim", type=int, default=32, help="Dimension of transformer heads.")
+    model_group.add_argument("--num-tlayers", type=int, default=5, help="Number of transformer layers.")
     # fmt: on
 
     # First check if we have a config file to deal with.
@@ -781,11 +786,11 @@ def create_multi_cluster_df_datasets(
     input_len: int,
     output_len: int,
     downsample: int,
+    stride: int,
 ):
     train_ds = []
     val_ds = []
     test_ds = []
-    stride = 17 #opt.stride
     # Make a queue to save memory by deleting while iterating.
     dc_recs_queue = mea.decompress_recordings(
         recordings, downsample=downsample, num_workers=opt.num_workers
@@ -887,8 +892,7 @@ class TrainableGroup:
         raise NotImplementedError
 
     def create_trainable(
-        self, recordings: Iterable[mea.CompressedSpikeRecording], config
-    ):
+        self, recordings: Iterable[mea.CompressedSpikeRecording], config, opt):
         raise NotImplementedError
 
 
@@ -916,13 +920,14 @@ class MultiClusterDistFieldTGroup(TrainableGroup):
         return model_bins
 
     @classmethod
-    def create_trainable(cls, recordings, config):
+    def create_trainable(cls, recordings, config, opt):
         output_len = cls.model_output_len(config)
         train_ds, val_ds, test_ds = create_multi_cluster_df_datasets(
             recordings,
             config.input_len,
             output_len,
             config.downsample,
+            stride=opt.stride,
         )
         # There is separation between the target inference duration, say 10ms,
         # and the output length of the model, say 20ms. The model output should
@@ -935,9 +940,9 @@ class MultiClusterDistFieldTGroup(TrainableGroup):
             cls.num_downsample_layers(config.input_len, config.output_len),
             len(recordings),
             max_num_clusters,
-            z_dim=2,#opt.zdim,
+            z_dim=opt.zdim, 
         )
-        res = DistFieldTrainableMC(
+        res = DistFieldVAETrainable(
             train_ds,
             val_ds,
             test_ds,
@@ -1009,7 +1014,7 @@ class LinearNonLinearTGroup(TrainableGroup):
         )
 
     @staticmethod
-    def create_trainable(recordings, config):
+    def create_trainable(recordings, config, opt):
         rec = recordings[0]
         num_inputs = IN_CHANNELS * config.input_len
         m = retinapy.models.LinearNonlinear(in_n=num_inputs, out_n=1)
@@ -1020,7 +1025,7 @@ class LinearNonLinearTGroup(TrainableGroup):
         return LinearNonLinearTrainable(train_ds, val_ds, test_ds, m, label)
 
 
-def _train(out_dir):
+def _train(out_dir, opt):
     print("Models & Configurations")
     print("=======================")
     # Product of models and configs
@@ -1068,7 +1073,6 @@ def _train(out_dir):
                 mea.load_stimulus_pattern(opt.stimulus_pattern),
                 mea.load_recorded_stimulus(opt.stimulus),
                 mea.load_response(opt.response),
-                # cluster 21 and 138 have been used for testing regularly.
                 include_clusters=include_cluster_ids,
             )
         ]
@@ -1078,7 +1082,7 @@ def _train(out_dir):
             opt.stimulus,
             opt.response,
         )
-        ## Filter the recording with different sample rate
+        ## Filter the recording with non-standard sample rate
         skip_rec_names = {"Chicken_21_08_21_Phase_00"}
         recordings = [r for r in recordings if r.name not in skip_rec_names]
 
@@ -1121,12 +1125,7 @@ def _train(out_dir):
 
 def main():
     retinapy._logging.setup_logging(logging.INFO)
-    # Arguments are parsed now. This is not done globally in the file scope as
-    # tests are run against methods in this file, and we don't want to run
-    # argument parsing when running tests.
-    global opt
     opt, opt_text = parse_args()
-
     labels = opt.labels.split(",") if opt.labels else None
     base_dir = pathlib.Path(opt.output if opt.output else DEFAULT_OUT_BASE_DIR)
     out_dir = retinapy._logging.get_outdir(base_dir, labels)
@@ -1135,7 +1134,7 @@ def main():
     # Record the arguments.
     with open(str(out_dir / ARGS_FILENAME), "w") as f:
         f.write(opt_text)
-    _train(out_dir)
+    _train(out_dir, opt)
 
 
 if __name__ == "__main__":
