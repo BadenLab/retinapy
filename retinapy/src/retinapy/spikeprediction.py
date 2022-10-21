@@ -504,8 +504,9 @@ class DistFieldTrainable_(retinapy.train.Trainable):
                 y = torch.sum(target_spikes[:, 0:eval_bins], dim=1)
                 predictions[eval_len].append(pred)
                 targets[eval_len].append(y)
-            # Plot some example input-outputs
-            if len(plotly_figs) < self.num_plots:
+            # Plot some example input-outputs. Only for snippets with spikes,
+            # as otherwise the plots are not very interesting.
+            if len(plotly_figs) < self.num_plots and torch.sum(target_spikes):
                 # Plot the first batch element.
                 idx = 0
                 plotly_figs.append(
@@ -562,7 +563,6 @@ class DistFieldTrainable_(retinapy.train.Trainable):
             in_spikes=sample["snippet"][idx][-1].cpu().numpy(),
             target_dist=target_dist.cpu().numpy(),
             model_out=model_out[idx].cpu().numpy(),
-            pos_enc=sample["snippet"][idx][4].cpu().numpy(),
             start_ms=0,
             bin_duration_ms=self.sample_period_ms,
             cluster_label=cluster_label(sample),
