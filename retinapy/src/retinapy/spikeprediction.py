@@ -33,7 +33,7 @@ IN_CHANNELS = 4 + 1
 # into the [0,1] region.
 LOSS_CALC_PAD_MS = 600
 DIST_CLAMP_MS = 600
-SPLIT_RATIO = (3, 1, 1)
+SPLIT_RATIO = (7, 2, 1)
 
 _logger = logging.getLogger(__name__)
 
