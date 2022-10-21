@@ -94,6 +94,7 @@ def parse_args():
     parser.add_argument("--zdim", type=int, default=2, help="VAE latent dimension")
     parser.add_argument("--vae-beta", type=float, default=0.01, help="VAE beta parameter.")
     parser.add_argument("--stride", type=int, default=17, help="Dataset stride.")
+    parser.add_argument("--num-workers", type=int, default=24, help="Number of workers for data loading.")
     # fmt: on
 
     # First check if we have a config file to deal with.
@@ -787,7 +788,7 @@ def create_multi_cluster_df_datasets(
     stride = 17 #opt.stride
     # Make a queue to save memory by deleting while iterating.
     dc_recs_queue = mea.decompress_recordings(
-        recordings, downsample=downsample, num_workers=20
+        recordings, downsample=downsample, num_workers=opt.num_workers
     )
     while dc_recs_queue:
         rec = dc_recs_queue.popleft()
