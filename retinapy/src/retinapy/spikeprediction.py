@@ -38,7 +38,8 @@ SPLIT_RATIO = (7, 2, 1)
 _logger = logging.getLogger(__name__)
 
 
-def parse_args():
+def arg_parsers():
+
     """Parse commandline and config file arguments.
 
     The approach carried out here is inspired by the pytorch-image-models
@@ -101,7 +102,11 @@ def parse_args():
     model_group.add_argument("--head-dim", type=int, default=32, help="Dimension of transformer heads.")
     model_group.add_argument("--num-tlayers", type=int, default=5, help="Number of transformer layers.")
     # fmt: on
+    return config_parser, parser
 
+
+def parse_args():
+    config_parser, parser = arg_parsers()
     # First check if we have a config file to deal with.
     args, remaining = config_parser.parse_known_args()
     if args.config:
@@ -114,6 +119,14 @@ def parse_args():
     # Serialize the arguments.
     opt_text = yaml.safe_dump(opt.__dict__, default_flow_style=False)
     return opt, opt_text
+
+def args_from_yaml(yaml_path):
+    _, parser = arg_parsers()
+    with open(yaml_path, "r") as f:
+        args = yaml.safe_load(f)
+    parser.set_defaults(**args)
+    opt = parser.parse_args(args=[])
+    return opt
 
 
 class Configuration:
@@ -621,7 +634,8 @@ class TransformerTrainable(DistFieldTrainable_):
 
 class DistFieldVAETrainable(DistFieldTrainable_):
     def __init__(
-        self, train_ds, val_ds, test_ds, model, model_label, eval_lengths
+        self, train_ds, val_ds, test_ds, model, model_label, eval_lengths,
+        vae_beta,
     ):
         """Trainable for a multi-cluster distance field model.
 
@@ -635,6 +649,7 @@ class DistFieldVAETrainable(DistFieldTrainable_):
         # 20*exp([-3, 3])  = [1.0, 402], which is a pretty good range, with
         # 20 being the mid point. Is this too low?
         self.dist_norm = 20
+        self.vae_beta = vae_beta
         # Network output should ideally have mean,sd = (0, 1). Network output
         # 20*exp([-3, 3])  = [1.0, 402], which is a pretty good range, with
         # 20 being the mid point. Is this too low?
@@ -647,7 +662,7 @@ class DistFieldVAETrainable(DistFieldTrainable_):
         kl_loss = -0.5 * torch.sum(1 + z_lorvar - z_mu.pow(2) - z_lorvar.exp())
         dist_loss = dist_loss / batch_size
         # β = 1/1000
-        β = opt.vae_beta
+        β = self.vae_beta
         kl_loss = β * kl_loss / batch_size
         total = dist_loss + kl_loss
         return total, dist_loss, kl_loss
@@ -851,13 +866,14 @@ def create_multi_cluster_df_datasets(
     output_len: int,
     downsample: int,
     stride: int,
+    num_workers: int,
 ):
     train_ds = []
     val_ds = []
     test_ds = []
     # Make a queue to save memory by deleting while iterating.
     dc_recs_queue = mea.decompress_recordings(
-        recordings, downsample=downsample, num_workers=opt.num_workers
+        recordings, downsample=downsample, num_workers=num_workers
     )
     while dc_recs_queue:
         rec = dc_recs_queue.popleft()
@@ -992,6 +1008,7 @@ class MultiClusterDistFieldTGroup(TrainableGroup):
             output_len,
             config.downsample,
             stride=opt.stride,
+            num_workers=opt.num_workers,
         )
         # There is separation between the target inference duration, say 10ms,
         # and the output length of the model, say 20ms. The model output should
@@ -1013,6 +1030,7 @@ class MultiClusterDistFieldTGroup(TrainableGroup):
             model,
             DistFieldCnnTGroup.trainable_label(config),
             eval_lengths=[10, 20, 50],
+            vae_beta=opt.vae_beta,
         )
         return res
 
@@ -1040,7 +1058,7 @@ class TransformerTGroup(TrainableGroup):
         # and the output length of the model, say 20ms. The model output should
         # be at least as large as the target inference duration, and it will
         # probably benefit in being larger.
-        output_lens = {1984: 200, 992: 100, 3174: 400, 1586: 200}
+        output_lens = {1984: 200, 992: 150, 3174: 400, 1586: 200}
         model_out_len = output_lens[config.input_len]
         train_ds, val_ds, test_ds = create_multi_cluster_df_datasets(
             recordings,
@@ -1048,6 +1066,7 @@ class TransformerTGroup(TrainableGroup):
             model_out_len,
             config.downsample,
             stride=opt.stride,
+            num_workers=opt.num_workers,
         )
         max_num_clusters = max([len(r.cluster_ids) for r in recordings])
         model = retinapy.models.TransformerModel(
@@ -1068,6 +1087,7 @@ class TransformerTGroup(TrainableGroup):
             model,
             DistFieldCnnTGroup.trainable_label(config),
             eval_lengths=[10, 20, 50],
+            vae_beta=opt.vae_beta,
         )
         return res
 
@@ -1078,7 +1098,7 @@ class DistFieldCnnTGroup(TrainableGroup):
         return f"DistFieldCnn-{config.downsample}" f"ds_{config.input_len}in"
 
     @staticmethod
-    def create_trainable(recordings, config):
+    def create_trainable(recordings, config, opt):
         if len(recordings) != 1 or len(recordings[0].cluster_ids) != 1:
             raise ValueError(
                 "DistFieldCnn model only supports a single cluster."
@@ -1199,7 +1219,7 @@ def _train(out_dir, opt):
                 continue
             if not do_trainable[t_label]:
                 continue
-            t = tg.create_trainable(recordings, c)
+            t = tg.create_trainable(recordings, c, opt)
             if t is None:
                 logging.warning(
                     f"Skipping. Model ({t_label}) isn't yet supported."
