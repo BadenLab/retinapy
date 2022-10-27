@@ -255,6 +255,21 @@ class SpikeRecording:
         self.spikes = np.concatenate((self.spikes, recording.spikes))
         return self
 
+    def spike_snippets(self, total_len : int, post_spike_len : int):
+        snippets_by_cluster = []
+        # Can this be done in a single call?
+        # Could make compress_spikes operate on 2d array, then sent all
+        # spikes to spike_snippets then split with np.split().
+        for c in range(self.spikes.shape[1]):
+            snippets_by_cluster.append(
+                    spike_snippets(
+                        self.stimulus,
+                        compress_spikes(self.spikes[:, c]),
+                        total_len,
+                        post_spike_len,
+                    )
+                )
+        return snippets_by_cluster
 
 def split(recording: SpikeRecording, split_ratio: Sequence[int]):
     """Split a recording into multiple recordings.
