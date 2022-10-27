@@ -443,7 +443,13 @@ class DistFieldTrainable_(retinapy.train.Trainable):
     DEFAULT_DIST_NORM = 20
 
     def __init__(
-        self, train_ds, val_ds, test_ds, model, model_label, eval_lengths=None
+        self,
+        train_ds,
+        val_ds,
+        test_ds,
+        model,
+        model_label,
+        eval_lengths=None,
     ):
         super().__init__(train_ds, val_ds, test_ds, model, model_label)
         sample_rates_equal = (
@@ -460,7 +466,13 @@ class DistFieldTrainable_(retinapy.train.Trainable):
         else:
             self.eval_lengths_ms = eval_lengths
         self.max_eval_count = self.DEFAULT_MAX_EVAL_COUNT
-        self.dist_norm = self.DEFAULT_DIST_NORM
+        # Insure the model output has a mean not too far from 0.
+        MAX_MODEL_OUTPUT = 2
+        self.output_offset = (
+            # log(max_distance) - OFFSET = MAX_MODEL_OUTPUT
+            math.log(self.ms_to_bins(DIST_CLAMP_MS))
+            - MAX_MODEL_OUTPUT
+        )
         self.num_plots = 16
 
     @property
@@ -468,7 +480,7 @@ class DistFieldTrainable_(retinapy.train.Trainable):
         res = next(self.model.parameters()).device
         return res
 
-    def eval_ms_to_bins(self, ms: float) -> int:
+    def ms_to_bins(self, ms: float) -> int:
         num_bins = max(1, round(ms * (self.sample_rate / 1000)))
         return num_bins
 
@@ -488,10 +500,10 @@ class DistFieldTrainable_(retinapy.train.Trainable):
         return self.train_ds.sample_rate
 
     def distfield_to_nn_output(self, distfield):
-        return torch.log((distfield + self.MIN_DIST) / self.dist_norm)
+        return torch.log((distfield + self.MIN_DIST)) - self.output_offset
 
     def nn_output_to_distfield(self, nn_output):
-        return torch.exp(nn_output) * self.dist_norm - self.MIN_DIST
+        return torch.exp(nn_output + self.output_offset) - self.MIN_DIST
 
     def quick_infer(self, dist, num_bins):
         """Quickly infer the number of spikes in the eval region.
@@ -501,7 +513,7 @@ class DistFieldTrainable_(retinapy.train.Trainable):
         Returns:
             the number of spikes in the region.
         """
-        threshold = 0.4
+        threshold = -0.4
         res = (dist[:, 0:num_bins] < threshold).sum(dim=1)
         return res
 
@@ -520,7 +532,7 @@ class DistFieldTrainable_(retinapy.train.Trainable):
             loss_meter.update(loss.item())
             # Count accuracies
             for eval_len in self.eval_lengths_ms:
-                eval_bins = self.eval_ms_to_bins(eval_len)
+                eval_bins = self.ms_to_bins(eval_len)
                 pred = self.quick_infer(model_output, num_bins=eval_bins)
                 y = torch.sum(target_spikes[:, 0:eval_bins], dim=1)
                 predictions[eval_len].append(pred)
@@ -636,7 +648,13 @@ class TransformerTrainable(DistFieldTrainable_):
 
 class DistFieldVAETrainable(DistFieldTrainable_):
     def __init__(
-        self, train_ds, val_ds, test_ds, model, model_label, eval_lengths,
+        self,
+        train_ds,
+        val_ds,
+        test_ds,
+        model,
+        model_label,
+        eval_lengths,
         vae_beta,
     ):
         """Trainable for a multi-cluster distance field model.
@@ -764,7 +782,7 @@ class DistFieldVAETrainable(DistFieldTrainable_):
             kl_loss_meter.update(kl_loss.item())
             # Count accuracies
             for eval_len in self.eval_lengths_ms:
-                eval_bins = self.eval_ms_to_bins(eval_len)
+                eval_bins = self.ms_to_bins(eval_len)
                 pred = self.quick_infer(model_output, num_bins=eval_bins)
                 y = torch.sum(target_spikes[:, 0:eval_bins], dim=1)
                 predictions[eval_len].append(pred)
@@ -773,9 +791,12 @@ class DistFieldVAETrainable(DistFieldTrainable_):
             if len(input_output_figs) < self.num_plots:
                 # Plot the first batch element.
                 idx = 0
-                input_output_figs.append(
-                    self.input_output_fig(sample, model_output, idx)
-                )
+                # Don't bother if there is no spike.
+                contains_spike = torch.sum(target_spikes[0]) > 0
+                if contains_spike:
+                    input_output_figs.append(
+                        self.input_output_fig(sample, model_output, idx)
+                    )
 
         metrics = [
             retinapy._logging.Metric("loss", loss_meter.avg, increasing=False),
@@ -905,7 +926,7 @@ def create_multi_cluster_df_datasets(
                 # For the moment, while the validation just takes a small
                 # portion of the validation set.
                 train_val_test_splits,
-                [False, False, False],
+                [True, True, False],
             )
         ]
         train_ds.append(train_val_test_datasets[0])
@@ -1031,7 +1052,7 @@ class MultiClusterDistFieldTGroup(TrainableGroup):
             cls.num_downsample_layers(config.input_len, config.output_len),
             len(recordings),
             max_num_clusters,
-            z_dim=opt.zdim, 
+            z_dim=opt.zdim,
         )
         res = DistFieldVAETrainable(
             train_ds,
@@ -1068,8 +1089,13 @@ class TransformerTGroup(TrainableGroup):
         # and the output length of the model, say 20ms. The model output should
         # be at least as large as the target inference duration, and it will
         # probably benefit in being larger.
-        output_lens = {1984: 200, 992: 150, 3174: 400, 1586: 200}
-        model_out_len = output_lens[config.input_len]
+        model_out_len = {1984: 200, 992: 150, 3174: 400, 1586: 200}[
+            config.input_len
+        ]
+        stim_ds = {1984: 6, 992: 5, 3174: 7, 1586: 6}[config.input_len]
+        spike_patch_len = {1984: 16, 992: 8, 3174: 32, 1586: 16}[
+            config.input_len
+        ]
         train_ds, val_ds, test_ds = create_multi_cluster_df_datasets(
             recordings,
             config.input_len,
@@ -1082,13 +1108,14 @@ class TransformerTGroup(TrainableGroup):
         model = retinapy.models.TransformerModel(
             config.input_len,
             model_out_len,
-            stim_downsample=5,
+            stim_downsample=stim_ds,
             num_recordings=len(recordings),
             num_clusters=max_num_clusters,
             z_dim=opt.zdim,
             num_heads=opt.num_heads,
             head_dim=opt.head_dim,
             num_tlayers=opt.num_tlayers,
+            spike_patch_len=spike_patch_len,
         )
         res = DistFieldVAETrainable(
             train_ds,
