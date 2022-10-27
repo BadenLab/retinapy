@@ -93,6 +93,7 @@ def arg_parsers():
     parser.add_argument("--epochs", type=int, default=8, metavar="N", help="number of epochs to train (default: 300)")
     parser.add_argument("--batch-size", type=int, default=128, help="batch size")
     parser.add_argument("--num-workers", type=int, default=24, help="Number of workers for data loading.")
+    parser.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, help="Pin memory?")
 
     model_group = parser.add_argument_group("Model options")
     model_group.add_argument("--zdim", type=int, default=2, help="VAE latent dimension")
@@ -119,6 +120,7 @@ def parse_args():
     # Serialize the arguments.
     opt_text = yaml.safe_dump(opt.__dict__, default_flow_style=False)
     return opt, opt_text
+
 
 def args_from_yaml(yaml_path):
     _, parser = arg_parsers()
@@ -979,7 +981,8 @@ class TrainableGroup:
         raise NotImplementedError
 
     def create_trainable(
-        self, recordings: Iterable[mea.CompressedSpikeRecording], config, opt):
+        self, recordings: Iterable[mea.CompressedSpikeRecording], config, opt
+    ):
         raise NotImplementedError
 
 
@@ -1249,6 +1252,8 @@ def _train(out_dir, opt):
                 steps_til_log=opt.steps_til_log,
                 steps_til_eval=opt.steps_til_eval,
                 initial_checkpoint=opt.initial_checkpoint,
+                num_workers=opt.num_workers,
+                pin_memory=opt.pin_memory,
             )
             logging.info(f"Finished training model")
             done_trainables.add(t_label)

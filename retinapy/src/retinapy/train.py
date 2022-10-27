@@ -182,7 +182,8 @@ class Trainable:
         return f"Trainable ({self.label})"
 
 
-def _create_dataloaders(train_ds, val_ds, test_ds, batch_size, num_workers):
+def _create_dataloaders(train_ds, val_ds, test_ds, batch_size, 
+                        num_workers, pin_memory):
     # Setting pin_memory=True. This is generally recommended when training on
     # Nvidia GPUs. See:
     #   - https://discuss.pytorch.org/t/when-to-set-pin-memory-to-true/19723
@@ -193,7 +194,7 @@ def _create_dataloaders(train_ds, val_ds, test_ds, batch_size, num_workers):
         shuffle=True,
         drop_last=True,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=pin_memory,
     )
     val_dl = torch.utils.data.DataLoader(
         val_ds,
@@ -202,7 +203,7 @@ def _create_dataloaders(train_ds, val_ds, test_ds, batch_size, num_workers):
         shuffle=True,
         drop_last=True,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=pin_memory,
     )
     test_dl = torch.utils.data.DataLoader(
         test_ds,
@@ -260,7 +261,8 @@ def train(
     steps_til_eval: Optional[int] = None,
     evals_til_eval_test_ds: Optional[int] = None,
     initial_checkpoint: Optional[Union[str, pathlib.Path]] = None,
-    num_workers: int = 20,
+    num_workers: int = 4,
+    pin_memory: bool = False,
 ):
     """
     Train a model.
