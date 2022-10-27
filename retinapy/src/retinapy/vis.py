@@ -10,6 +10,7 @@ import retinapy.dataset
 import retinapy.mea as mea
 import retinapy.spikeprediction as sp
 import torch
+import sklearn.manifold
 
 """
 This module is starting out as somewhere to create the most commonly figures 
@@ -468,10 +469,66 @@ def distfield_model_in_out(
     return fig
 
 
-def latent_fig(rec_ids : np.ndarray, 
-               cluster_ids : np.ndarray, 
-               z_xs :np.ndarray, 
-               z_ys : np.ndarray, use_label=False):
+def latent_tsne_fig(
+    rec_ids: np.ndarray,
+    cluster_ids: np.ndarray,
+    zs: np.ndarray,
+    use_label=False,
+    perplexity=25,
+):
+    """Arbitrary dimensional latent points plotted in 2D using t-SNE.
+
+    Args:
+        perplexity: "perplexity" parameter for t-SNE. This option makes a big
+            difference to the output. The default has been set based on some
+            quick trial and error and guesswork, while playing with the latent
+            spike of a 40D transformer VAE model.
+    """
+
+    # 1. Run t-SNE.
+    z_2d = sklearn.manifold.TSNE(
+        n_components=2,
+        early_exaggeration=12,  # default = 12
+        learning_rate="auto",
+        n_iter=5000,  # default = 1000
+        min_grad_norm=1e-7,  # default = 1e-7
+        init="random",  # default = 'random', alternative 'pca'
+        angle=0.6,  # default = 0.5. Higher is faster.
+        n_jobs=20,  # default = 1
+        perplexity=25,
+    ).fit_transform(zs)
+
+    # 1. Gather the data to plot. We will actually do that here, so this is
+    # quite a proactive plotting function.
+    fig = go.Figure()
+    labels = [
+        f"({r_idx}, {c_id})" for (r_idx, c_id) in zip(rec_ids, cluster_ids)
+    ]
+    mode = "markers+text" if use_label else "markers"
+    scatter = go.Scatter(
+        x=z_2d[:, 0],
+        y=z_2d[:, 1],
+        text=labels,
+        textposition="bottom center",
+        mode=mode,
+    )
+    fig.add_trace(scatter)
+    fig.update_layout(
+        {
+            "title": {"text": f"Latent space, (t-SNE reduction from {zs.shape[1]} dimensions)"},
+        }
+    )
+    return fig
+
+
+def latent2d_fig(
+    rec_ids: np.ndarray,
+    cluster_ids: np.ndarray,
+    z_xs: np.ndarray,
+    z_ys: np.ndarray,
+    use_label=False,
+):
+    """Basic 2D plot of 2D latent variables."""
     # 1. Gather the data to plot. We will actually do that here, so this is
     # quite a proactive plotting function.
     fig = go.Figure()
@@ -487,9 +544,11 @@ def latent_fig(rec_ids : np.ndarray,
         mode=mode,
     )
     fig.add_trace(scatter)
-    fig.update_layout({
+    fig.update_layout(
+        {
             "title": {"text": "Latent space, z"},
             "xaxis": {"range": [-3, 3]},
             "yaxis": {"range": [-3, 3]},
-        })
+        }
+    )
     return fig
