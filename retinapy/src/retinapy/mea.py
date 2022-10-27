@@ -255,21 +255,22 @@ class SpikeRecording:
         self.spikes = np.concatenate((self.spikes, recording.spikes))
         return self
 
-    def spike_snippets(self, total_len : int, post_spike_len : int):
+    def spike_snippets(self, total_len: int, post_spike_len: int):
         snippets_by_cluster = []
         # Can this be done in a single call?
         # Could make compress_spikes operate on 2d array, then sent all
         # spikes to spike_snippets then split with np.split().
         for c in range(self.spikes.shape[1]):
             snippets_by_cluster.append(
-                    spike_snippets(
-                        self.stimulus,
-                        compress_spikes(self.spikes[:, c]),
-                        total_len,
-                        post_spike_len,
-                    )
+                spike_snippets(
+                    self.stimulus,
+                    compress_spikes(self.spikes[:, c]),
+                    total_len,
+                    post_spike_len,
                 )
+            )
         return snippets_by_cluster
+
 
 def split(recording: SpikeRecording, split_ratio: Sequence[int]):
     """Split a recording into multiple recordings.
@@ -445,12 +446,14 @@ def load_3brain_recordings(
     stimulus_recording_path: str,
     response_recording_path: str,
     include: Optional[Iterable[str]] = None,
+    num_workers: int = 4,
 ) -> List[CompressedSpikeRecording]:
     """
     Creates a CompressedSpikeRecording for each recording in the 3Brain data.
 
     Args:
         include: a list of recording names to include.
+        num_workers: how many threads can be used to load the data.
     """
     stimulus_pattern = load_stimulus_pattern(stimulus_pattern_path)
     stimulus_recordings = load_recorded_stimulus(stimulus_recording_path)
@@ -470,7 +473,9 @@ def load_3brain_recordings(
         )
         return rec_obj
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=num_workers
+    ) as executor:
         future_to_name = {
             executor.submit(_load, rec_name): rec_name for rec_name in to_load
         }
