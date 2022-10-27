@@ -31,6 +31,22 @@ def load_model(
     model_state = checkpoint_state["model"]
     model.load_state_dict(model_state)
 
+def load_model_and_optimizer(
+    model, optimizer, checkpoint_path: Union[str, pathlib.Path]):
+    checkpoint_path = pathlib.Path(checkpoint_path)
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(
+            f"Checkpoint file/folder ({checkpoint_path}) not found."
+        )
+    if checkpoint_path.is_dir():
+        checkpoint_path = list(checkpoint_path.glob("*.pth"))[-1]
+
+    _logger.info(f"Loading model from ({checkpoint_path}).")
+    checkpoint_state = torch.load(checkpoint_path)
+    model_state = checkpoint_state["model"]
+    model.load_state_dict(model_state)
+    optimizer.load_state_dict(checkpoint_state["optimizer"])
+
 
 def save_model(model, path: pathlib.Path, optimizer=None):
     _logger.info(f"Saving model to ({path})")

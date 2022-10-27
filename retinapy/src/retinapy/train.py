@@ -285,10 +285,27 @@ def train(
     tensorboard_dir = pathlib.Path(out_dir) / "tensorboard"
     tb_logger = retinapy._logging.TbLogger(tensorboard_dir)
 
+
     # Load the model & loss fn.
+    # The order here is important when resuming from checkpoints. We must:
+    # 1. Create model.
+    # 2. Send model to target device.
+    # 3. Create optimizer.
+    # 4. Initialize from checkpoint.
+    #
+    # The reason the order is crucial is that the optimizer must be on the gpu
+    # before having it's parameters populated, as there is no optimizer.gpu()
+    # method (possibly coming: https://github.com/pytorch/pytorch/issues/41839).
+    # An alternative would be to use the map_location argument. See the 
+    # discussion: https://github.com/pytorch/pytorch/issues/2830.
     model = trainable.model
+    model.cuda()
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=lr, weight_decay=weight_decay
+    )
     if initial_checkpoint is not None:
-        retinapy.models.load_model(model, initial_checkpoint)
+        retinapy.models.load_model_and_optimizer(model, optimizer, 
+                                                 initial_checkpoint)
 
     # Load the data.
     train_dl, val_dl, test_dl = _create_dataloaders(
@@ -296,14 +313,14 @@ def train(
         trainable.val_ds,
         trainable.test_ds,
         batch_size=batch_size,
-        num_workers=num_workers
+        num_workers=num_workers,
+        pin_memory=pin_memory,
     )
     _logger.info(
         f"Dataset sizes: train ({len(train_dl.dataset)}), "
         f"val ({len(val_dl.dataset)}), test ({len(test_dl.dataset)})."
     )
     model.train()
-    model.cuda()
     # Before going any further, log model structure.
     out_file = pathlib.Path(out_dir) / "model_summary.txt"
     with open(out_file, "w") as f:
@@ -320,10 +337,6 @@ def train(
             _logger.error(msg)
             summary = msg
         f.write(str(summary))
-
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=lr, weight_decay=weight_decay
-    )
 
     model_saver = retinapy._logging.ModelSaver(out_dir, model, optimizer)
     metric_tracker = retinapy._logging.MetricTracker(out_dir)

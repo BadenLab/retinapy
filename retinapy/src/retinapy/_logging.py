@@ -772,14 +772,16 @@ class ModelSaver:
     def save_recovery(self):
         """Trigger the saving of a checkpoint to the recovery path.
 
-        The recovery checkpoint is the only checkpoint taken mid-epoch. It is 
-        created periodically to allow training to restart in the event of an 
+        The recovery checkpoint is the only checkpoint taken mid-epoch. It is
+        created periodically to allow training to restart in the event of an
         error.
         """
-        _logger.info("Creating recovery checkpoint: "
-                     f"({str(self.recovery_path)})")
-        retinapy.models.save_model(self.model, self.recovery_path, 
-                                   self.optimizer)
+        _logger.info(
+            "Creating recovery checkpoint: " f"({str(self.recovery_path)})"
+        )
+        retinapy.models.save_model(
+            self.model, self.recovery_path, self.optimizer
+        )
 
     def delete_recovery(self):
         """Delete the recovery checkpoint.
@@ -789,8 +791,8 @@ class ModelSaver:
         """
         if self.recovery_path.exists():
             if not self.recovery_path.is_file():
-                raise Warning("Recovery path exists but is not a file "
-                              f"({str(self.recovery_path)})")
+                raise Warning(
+                    "Recovery path exists but is not a file "
+                    f"({str(self.recovery_path)})"
+                )
             self.recovery_path.unlink()
-
-
