@@ -5,6 +5,7 @@ from typing import Union
 import pathlib
 import einops
 import einops.layers.torch
+import math
 
 import retinapy
 import retinapy.mea as mea
@@ -656,7 +657,7 @@ class MultiClusterModel(nn.Module):
 class TransformerModel(nn.Module):
     def __init__(
         self, in_len, out_len, stim_downsample, num_recordings, num_clusters,
-        z_dim=2, num_heads=8, head_dim=64, num_tlayers=6):
+        z_dim=2, num_heads=8, head_dim=64, num_tlayers=6, spike_patch_len=8):
         super().__init__()
         self.num_recordings = num_recordings
         self.num_clusters = num_clusters
@@ -709,7 +710,7 @@ class TransformerModel(nn.Module):
             h2_n=32,
             out_n=self.embed_dim)
         # Transformer
-        self.patch_len = 8
+        self.spike_patch_len = spike_patch_len
         self.stim_embed = nn.Conv1d(
             self.l1_num_channels, self.embed_dim, kernel_size=1
         )
@@ -718,11 +719,12 @@ class TransformerModel(nn.Module):
         self.in_len = in_len
         in_stim_len = in_len + out_len
         enc_stim_len = 1 + (in_stim_len - 1) // (2**stim_downsample)
-        enc_spikes_len = in_len // self.patch_len
+        enc_spikes_len = math.ceil(in_len // self.spike_patch_len)
+        self.spike_pad = enc_spikes_len * self.spike_patch_len - in_len
         enc_len = enc_stim_len + enc_spikes_len + 1 # 1 for VAE encoding.
         self.pos_embed = nn.Parameter(torch.randn(enc_len, self.embed_dim))
 
-        self.spikes_embed = nn.Linear(self.patch_len, self.embed_dim)
+        self.spikes_embed = nn.Linear(self.spike_patch_len, self.embed_dim)
         mlp_expansion = 3
         self.transformer = retinapy.nn.Transformer(
             self.embed_dim,
@@ -754,7 +756,10 @@ class TransformerModel(nn.Module):
         return x
 
     def encode_spikes(self, spikes):
-        x = einops.rearrange(spikes, "b (t c) -> b t c", c=self.patch_len)
+        # Pad the spikes to be a multiple of the patch length.
+        # Pad on the left, as the left has less of an effect on the output.
+        x = F.pad(spikes, (self.spike_pad, 0))
+        x = einops.rearrange(x, "b (t c) -> b t c", c=self.spike_patch_len)
         x = self.spikes_embed(x)
         return x
 
