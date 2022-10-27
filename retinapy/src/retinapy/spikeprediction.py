@@ -803,16 +803,23 @@ class DistFieldVAETrainable(DistFieldTrainable_):
             ),
         }
         # Add the latent space visualization.
+        encodings = self.all_encodings()
+        rec_ids, _, cluster_ids, *zs = list(encodings.T.cpu().numpy())
         if self.model.z_dim == 2:
-            rec_ids, _, cluster_ids, z_xs, z_ys = list(
-                self.all_encodings().T.cpu().numpy()
-            )
-            latent_fig = retinapy.vis.latent_fig(
-                rec_ids, cluster_ids, z_xs, z_ys
+            latent_fig = retinapy.vis.latent2d_fig(
+                rec_ids, cluster_ids, zs[0], zs[1]
             )
             results["latent-fig"] = retinapy._logging.PlotlyFigureList(
                 [latent_fig]
             )
+        # And try out Tensorboard's embedding feature.
+        results["z-embeddings"] = retinapy._logging.Embeddings(
+            embeddings=encodings[:, 2:].cpu().numpy(),
+            labels=[
+                f"{int(r_id)}-{int(c_id)}"
+                for r_id, c_id in zip(rec_ids, cluster_ids)
+            ],
+        )
         return results
 
 

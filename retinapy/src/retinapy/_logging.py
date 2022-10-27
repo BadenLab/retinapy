@@ -8,7 +8,7 @@ from numbers import Number
 import pathlib
 import sys
 import time
-from typing import Dict, Optional, Sequence, Union, Any
+from typing import Dict, Optional, Sequence, Union, Any, Iterable
 import collections.abc
 
 import numpy as np
@@ -396,11 +396,25 @@ class LogData:
         self.content = content
 """
 
+
 class PlotlyFigureList:
     """Wrap one or more Plotly figures for logging (e.g. via Tensorboard)."""
 
     def __init__(self, figs):
         self.figs = figs
+
+
+class Embeddings:
+    """Wrap an embedding matrix for logging (e.g. via Tensorboard)."""
+
+    def __init__(self, embeddings: torch.Tensor, labels: Iterable[str]):
+        """Args:
+        embedding: A 2D tensor of shape (num_embeddings, embedding_dim).
+        """
+        self.embeddings = embeddings
+        self.labels = labels
+        # Not yet connected.
+        self.label_img = None
 
 
 class MetricTracker:
@@ -531,22 +545,22 @@ def plotly_fig_to_array(fig) -> np.ndarray:
     buf = io.BytesIO(fig_bytes)
     img = PIL.Image.open(buf)
     array_rgba = np.asarray(img)
-    array_rgb = array_rgba[:,:,0:3]
+    array_rgb = array_rgba[:, :, 0:3]
     return array_rgb
 
 
 class TbLogger(object):
     """Manages logging to TensorBoard."""
 
-    def __init__(self, tensorboard_dir):
+    def __init__(self, tensorboard_dir : Union[str, pathlib.Path]):
         self.writer = tb.SummaryWriter(str(tensorboard_dir))
 
     @staticmethod
-    def tag(label, log_group):
+    def tag(label : str, log_group : str):
         res = f"{label}/{log_group}"
         return res
 
-    def log(self, n_iter, data, log_group):
+    def log(self, n_iter : int, data, log_group : str):
         """Log a mixture of different types of data."""
         for k, v in data.items():
             # The infamous if-else
@@ -554,21 +568,29 @@ class TbLogger(object):
                 self.log_metrics(n_iter, v, log_group)
             elif isinstance(v, PlotlyFigureList):
                 self.log_plotly(k, n_iter, v, log_group)
+            elif isinstance(v, Embeddings):
+                self.log_embeddings(k, n_iter, v, log_group)
             else:
                 raise ValueError(
                     "Logging the given data is unsupported " f"({data})."
                 )
 
-    def log_metrics(self, n_iter, metrics, log_group):
+    def log_metrics(self, n_iter : int, metrics, log_group : str):
         for metric in metrics:
             self.writer.add_scalar(
                 self.tag(metric.name, log_group), metric.value, n_iter
             )
 
-    def log_scalar(self, n_iter, name, val, log_group):
+    def log_scalar(self, n_iter: int, name: str, val, log_group: str):
         self.writer.add_scalar(self.tag(name, log_group), val, n_iter)
 
-    def log_plotly(self, label, n_iter, fig_list: PlotlyFigureList, log_group):
+    def log_plotly(
+        self,
+        label: str,
+        n_iter: int,
+        fig_list: PlotlyFigureList,
+        log_group: str,
+    ):
         if not isinstance(fig_list.figs, collections.abc.Iterable):
             raise ValueError("Expected a iterable of plots.")
         plots_as_arrays = [plotly_fig_to_array(p) for p in fig_list.figs]
@@ -578,6 +600,16 @@ class TbLogger(object):
             plots_as_array,
             n_iter,
             dataformats="NHWC",
+        )
+
+    def log_embeddings(self, label: str, n_iter: int,
+                      embedding: Embeddings, log_group: str):
+        self.writer.add_embedding(
+            embedding.embeddings,
+            metadata=embedding.labels,
+            label_img=embedding.label_img,
+            global_step=n_iter,
+            tag=self.tag(label, log_group),
         )
 
 
