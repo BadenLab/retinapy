@@ -15,7 +15,7 @@ setuptools.setup(
         'h5py'],
     package_dir={'': 'src'},
     include_package_data=True,
-    license = 'BSD-3',
+    license='BSD-3',
     classifiers=[
         'Development Status :: 2 - Pre-Alpha',
         'License :: OSI Approved :: BSD License',

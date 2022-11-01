@@ -552,7 +552,6 @@ def decompress_recordings(
     """
     Decompress multiple recordings.
     """
-    done = []
 
     def _decompress(rec):
         return decompress_recording(rec, downsample)
