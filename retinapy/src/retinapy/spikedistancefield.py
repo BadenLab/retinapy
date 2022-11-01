@@ -194,6 +194,7 @@ def mle_inference_from_df(
             zero_spike_memo[i, j] = energy
 
     global_best_energy = math.inf
+    low_energy_positions = dist[dist < 20]
 
     def _dfs(a, b, energy_so_far, num_allowed_spikes) -> Tuple[float, Tuple[int, ...]]:
         nonlocal global_best_energy
@@ -202,14 +203,15 @@ def mle_inference_from_df(
         if (a, b, num_allowed_spikes) in memo:
             return memo[(a, b, num_allowed_spikes)]
         if energy_so_far > global_best_energy:
-            pass
-        #return math.inf, ()
+            return math.inf, ()
         no_spike_energy = zero_spike_memo[a, b]
         best_energy = no_spike_energy
         best_seq = ()
         if not num_allowed_spikes:
             return best_energy, best_seq
         for candidate_pos in range(a, b + 1, resolution):
+            if not low_energy_positions[candidate_pos]:
+                continue
             for num_l_spikes in range(num_allowed_spikes):
                 for num_r_spikes in range(num_allowed_spikes - num_l_spikes):
                     lhs_energy, lhs_seq = _dfs(a, candidate_pos - 1, energy_so_far, num_l_spikes)
