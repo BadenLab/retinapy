@@ -203,6 +203,12 @@ class DistFieldDataset(torch.utils.data.Dataset):
     def stride(self):
         return self.ds.stride
 
+    @classmethod
+    def mask_start(cls, spikes):
+        mask_val = cls.MASK_VALUE
+        mask_start_idx = np.min(np.flatnonzero(spikes == mask_val))
+        return mask_start_idx
+
     def _augment_stimulus(self, stimulus):
         """
         Augment a stimulus portion of a sample.
@@ -281,9 +287,7 @@ class DistFieldDataset(torch.utils.data.Dataset):
         |  a) input stimulus                            |
         +---------------------------------+-------------+---------+
         |  b) input spike data            | c) masked   | d) pad* |
-        +---------------------------------+-------------+
-        |  e) position encoding                         |
-        +---------------------------------+-------------+
+        +---------------------------------+-------------+---------+
 
         Note (d*): there is an extra bit of spike data used when creating
         a sample, here called a pad. The pad is used to calculate the ground
@@ -332,6 +336,7 @@ class DistFieldDataset(torch.utils.data.Dataset):
             "cluster_id": cluster_id,
         }
         return res
+
 
 
 class LabeledConcatDataset(torch.utils.data.Dataset):

@@ -659,6 +659,7 @@ class TransformerModel(nn.Module):
         self, in_len, out_len, stim_downsample, num_recordings, num_clusters,
         z_dim=2, num_heads=8, head_dim=64, num_tlayers=6, spike_patch_len=8):
         super().__init__()
+        self.in_len = in_len
         self.num_recordings = num_recordings
         self.num_clusters = num_clusters
         self.z_dim = z_dim
@@ -716,11 +717,10 @@ class TransformerModel(nn.Module):
         )
         # Normally initialized nn.Parameter
         # 1092 = 992 + 100
-        self.in_len = in_len
-        in_stim_len = in_len + out_len
+        in_stim_len = self.in_len + out_len
         enc_stim_len = 1 + (in_stim_len - 1) // (2**stim_downsample)
-        enc_spikes_len = math.ceil(in_len // self.spike_patch_len)
-        self.spike_pad = enc_spikes_len * self.spike_patch_len - in_len
+        enc_spikes_len = math.ceil(self.in_len // self.spike_patch_len)
+        self.spike_pad = enc_spikes_len * self.spike_patch_len - self.in_len
         enc_len = enc_stim_len + enc_spikes_len + 1 # 1 for VAE encoding.
         self.pos_embed = nn.Parameter(torch.randn(enc_len, self.embed_dim))
 
