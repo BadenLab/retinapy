@@ -11,12 +11,21 @@ import retinapy.mea as mea
 import retinapy.spikeprediction as sp
 import torch
 import sklearn.manifold
+from typing import Union, Iterable
+import pathlib
+import PIL.Image
+import logging
+import functools
+import concurrent.futures
+import scinot
 
 """
 This module is starting out as somewhere to create the most commonly figures 
 needed in notebooks. Going forward, it's hoped that some of the plots or 
 images created here can be recorded automatically when training a model.
 """
+
+_logger = logging.getLogger(__name__)
 
 
 def create_title(title: str, subtitle: Optional[str]) -> str:
@@ -110,6 +119,149 @@ def kernel(
         yaxis={"title": "Stimulus", "range": [0, 1]},
     )
     return fig
+
+
+class KernelPlots:
+    """Creates and saves kernel plots as images to disk.
+
+    Motivation:
+    This class was created to speed up the process of creating kernel plots when
+    they were needed in bulk for hover-over tooltips.
+    """
+
+    FILE_PATH_PATTERN = "{rec_name}_c{cluster_id}.png"
+    OUT_DIR = "kernel_plots"
+
+    def __init__(self, img_dir: Union[str, pathlib.Path]):
+        self.img_dir = pathlib.Path(img_dir)
+        if not self.img_dir.is_dir():
+            raise ValueError(
+                "img_dir must be a directory (with the saved kernel plots)."
+            )
+        self.cache = {}
+
+    def get(self, rec_name, cluster_id):
+        if (rec_name, cluster_id) in self.cache:
+            return self.cache[(rec_name, cluster_id)]
+        img = PIL.Image.open(
+            self.img_dir
+            / self.FILE_PATH_PATTERN.format(
+                rec_name=rec_name, cluster_id=cluster_id
+            )
+        )
+        self.cache[(rec_name, cluster_id)] = img
+        return img
+
+    @staticmethod
+    def _generate_single(
+        ds_rec, c_idx, snippet_len, snippet_pad, mini, out_dir
+    ):
+        snippets = mea.spike_snippets(
+            ds_rec.stimulus,
+            mea.compress_spikes(ds_rec.spikes[:, c_idx]),
+            snippet_len,
+            snippet_pad,
+        )
+        # Kernel and spike counts.
+        c_id = ds_rec.cluster_ids[c_idx]
+        ker = snippets.mean(axis=0)
+        num_spikes = len(snippets)
+        # Make figure.
+        bin_duration_ms = 1000 / ds_rec.sample_rate
+        t_0 = snippet_len - snippet_pad
+        fig = kernel(ker, t_0=t_0, bin_duration_ms=bin_duration_ms)
+        if mini:
+            fig.update_layout(
+                {
+                    "yaxis": {"visible": False},
+                    "xaxis": {"title": None},
+                    "title": {
+                        "text": (
+                            f'<span style="font-size:75%">{ds_rec.name}</span><br>'
+                            f'<span style="font-size:95%">c{c_id}</span> '
+                            '<span style="font-size:85%">'
+                            f'({scinot.format(num_spikes, 2)} spikes</span>)' 
+                        ),
+                    },
+                    "width": 200,
+                    "height": 200,
+                }
+            )
+        else:
+            fig.update_layout(
+                {
+                    "title": {
+                        "text": create_title(
+                            "STA kernel",
+                            f"rec: {ds_rec.name}, cluster: {c_id}",
+                        )
+                    }
+                }
+            )
+        # Save figure.
+        fig.write_image(
+            out_dir
+            / KernelPlots.FILE_PATH_PATTERN.format(
+                rec_name=ds_rec.name, cluster_id=c_id
+            )
+        )
+
+    @classmethod
+    def generate(
+        cls,
+        recs: Iterable[mea.SpikeRecording],
+        snippet_len: int,
+        snippet_pad: int,
+        out_dir: Union[str, pathlib.Path],
+        mini=False,
+        num_workers=4,
+    ) -> "KernelPlots":
+        """
+        Args:
+            recs: The recordings to generate the kernel plots for.
+            snippet_len: The length of the snippet to use for the kernel.
+            snippet_pad: The number of padding bins to use after the spike.
+            out_dir: The directory to save the plots to.
+            mini: If True, make the plots smaller by removing axes and making
+                the images smaller.
+        """
+        # Create outer directory.
+        out_dir = pathlib.Path(out_dir) / cls.OUT_DIR
+        exists_and_not_empty = out_dir.is_dir() and len(list(out_dir.iterdir()))
+        if exists_and_not_empty:
+            raise ValueError(
+                f"out_dir already exists and has contents ({out_dir})"
+            )
+        out_dir.mkdir(parents=False, exist_ok=True)
+
+        _logger.info(f"Creating kernel plots in {out_dir}")
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=num_workers
+        ) as executor:
+            _func = functools.partial(
+                cls._generate_single,
+                snippet_len=snippet_len,
+                snippet_pad=snippet_pad,
+                mini=mini,
+                out_dir=out_dir,
+            )
+            futures = {}
+            for ds_rec in recs:
+                for c_idx in range(len(ds_rec.cluster_ids)):
+                    f = executor.submit(_func, ds_rec=ds_rec, c_idx=c_idx)
+                    futures[f] = (ds_rec, c_idx)
+            # Wait for all futures to complete.
+            for future in concurrent.futures.as_completed(futures):
+                ds_rec, c_idx = futures[future]
+                try:
+                    future.result()
+                except Exception as err:
+                    _logger.error(
+                        f"Error creating kernel plot for cluster {c_idx} of "
+                        f"recording {ds_rec.name}: {err}"
+                    )
+        _logger.info(f"Finished creating kernel plots")
+        return KernelPlots(out_dir)
 
 
 def stimulus_fig(
@@ -341,7 +493,7 @@ def distfield_model_in_out(
         fig.append_trace(
             go.Scatter(
                 x=xs,
-                y=stimulus[idx, :],
+                y=stimulus[idx, :] + idx/10,
                 line_color=stim.display_hex,
                 name=f"{stim.wavelength} nm",
                 mode="lines",
@@ -385,8 +537,7 @@ def distfield_model_in_out(
     # to know what mask value the dataset is using. So it is necessary. I just
     # find it interesting to note the dependency. Can there be a project wide
     # mask value? Probably not a useful idea, is my guess.
-    mask_val = retinapy.dataset.DistFieldDataset.MASK_VALUE
-    mask_start_idx = np.min(np.flatnonzero(in_spikes == mask_val))
+    mask_start_idx = retinapy.dataset.DistFieldDataset.mask_start(in_spikes)
     xs_dist = xs[mask_start_idx:]
     if len(xs_dist) != len(model_out):
         raise ValueError(
@@ -515,7 +666,9 @@ def latent_tsne_fig(
     fig.add_trace(scatter)
     fig.update_layout(
         {
-            "title": {"text": f"Latent space, (t-SNE reduction from {zs.shape[1]} dimensions)"},
+            "title": {
+                "text": f"Latent space, (t-SNE reduction from {zs.shape[1]} dimensions)"
+            },
         }
     )
     return fig

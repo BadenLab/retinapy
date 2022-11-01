@@ -42,57 +42,6 @@ def test_load_recorded_stimulus():
         assert res.shape == known_shape
 
 
-@pytest.fixture
-def stimulus_pattern():
-    return mea.load_stimulus_pattern(FF_NOISE_PATTERN_PATH)
-
-
-@pytest.fixture
-def recorded_stimulus():
-    return mea.load_recorded_stimulus(FF_RECORDED_NOISE_PATH)
-
-
-@pytest.fixture
-def response_data():
-    return mea.load_response(FF_SPIKE_RESPONSE_PATH)
-
-
-@pytest.fixture
-def comp_exp0(stimulus_pattern, recorded_stimulus, response_data):
-    exp = mea.single_3brain_recording(
-        "Chicken_04_08_21_Phase_01",
-        stimulus_pattern,
-        recorded_stimulus,
-        response_data,
-    )
-    return exp
-
-
-@pytest.fixture
-def comp_exp12(stimulus_pattern, recorded_stimulus, response_data):
-    exp = mea.single_3brain_recording(
-        "Chicken_17_08_21_Phase_00",
-        stimulus_pattern,
-        recorded_stimulus,
-        response_data,
-    )
-    return exp
-
-
-@pytest.fixture
-def exp0(comp_exp0):
-    downsample = 18
-    exp = mea.decompress_recording(comp_exp0, downsample)
-    return exp
-
-
-@pytest.fixture
-def exp12(comp_exp12):
-    downsample = 18
-    exp = mea.decompress_recording(comp_exp12, downsample)
-    return exp
-
-
 def test_recording_names(response_data):
     known_list = [
         "Chicken_04_08_21_Phase_01",
@@ -141,7 +90,7 @@ def test_load_3brain_recordings():
     assert len(res) == 2
 
 
-def test_split(exp12):
+def test_split(dc_rec12):
     """Tests splitting a recording into multiple parts.
 
     Tests that:
@@ -152,18 +101,18 @@ def test_split(exp12):
     # Setup
     splits = (3, 1, 1)
     expected_len = 892863
-    assert len(exp12) == expected_len
+    assert len(dc_rec12) == expected_len
     expected_split_lens = [535716 + 3, 178572, 178572]
     expected_split_lens_reversed = [178572 + 3, 178572, 535716]
-    assert len(exp12) == sum(expected_split_lens)
+    assert len(dc_rec12) == sum(expected_split_lens)
     # Test
-    res = mea.split(exp12, splits)
+    res = mea.split(dc_rec12, splits)
     assert len(res) == 3, "There should be 3 splits."
     assert [
         len(s) for s in res
     ] == expected_split_lens, "Splits should be the correct length."
     # Do it again but reversed.
-    res = mea.split(exp12, splits[::-1])
+    res = mea.split(dc_rec12, splits[::-1])
     assert len(splits) == 3, "There should be 3 splits."
     assert [
         len(s) for s in res
@@ -171,10 +120,10 @@ def test_split(exp12):
 
     # Test 2
     with pytest.raises(ValueError):
-        mea.split(exp12, (0, 1, 1))
+        mea.split(dc_rec12, (0, 1, 1))
 
 
-def test_mirror_split(exp12):
+def test_mirror_split(dc_rec12):
     """Tests splitting a recording into multiple parts (the mirrored version).
 
     Tests that:
@@ -189,21 +138,21 @@ def test_mirror_split(exp12):
     # Setup
     splits = (3, 1, 1)
     expected_len = 892863
-    assert len(exp12) == expected_len
+    assert len(dc_rec12) == expected_len
     # Note how the remainders fall in different places compared to the
     # non-mirrored split. This is due to the mirrored split calling split
     # twice, under the hood.
     expected_split_lens = [535716 + 1, 178572, 178572 + 2]
     expected_split_lens_reversed = [178572 + 1, 178572, 535716 + 2]
-    assert len(exp12) == sum(expected_split_lens)
+    assert len(dc_rec12) == sum(expected_split_lens)
     # Test
-    res = mea.mirror_split(exp12, splits)
+    res = mea.mirror_split(dc_rec12, splits)
     assert len(res) == 3, "There should be 3 splits."
     assert [
         len(s) for s in res
     ] == expected_split_lens, "Splits should be the correct length."
     # Do it again but reversed.
-    res = mea.mirror_split(exp12, splits[::-1])
+    res = mea.mirror_split(dc_rec12, splits[::-1])
     assert len(splits) == 3, "There should be 3 splits."
     assert [
         len(s) for s in res
@@ -211,16 +160,16 @@ def test_mirror_split(exp12):
 
     # Test 2
     with pytest.raises(ValueError):
-        mea.split(exp12, (0, 1, 1))
+        mea.split(dc_rec12, (0, 1, 1))
 
     # Test 3
     with pytest.raises(ValueError):
-        mea.split(exp12, (1,))
+        mea.split(dc_rec12, (1,))
     with pytest.raises(ValueError):
-        mea.split(exp12, tuple())
+        mea.split(dc_rec12, tuple())
 
 
-def test_mirror_split2(exp12):
+def test_mirror_split2(dc_rec12):
     """
     Invariant test for mirror_split.
 
@@ -230,14 +179,14 @@ def test_mirror_split2(exp12):
     Tests that:
         - split lengths sum up to the length of the original.
         - splits have the same number of clusters.
-        - the values (stimulus and spikes) in the first half of the first 
+        - the values (stimulus and spikes) in the first half of the first
             split match the beginning of the original.
     """
     # Setup
     seed = 123
     rng = np.random.default_rng(seed)
     num_trials = 20
-    orig_len = len(exp12)
+    orig_len = len(dc_rec12)
     num_splits = rng.integers(low=2, high=10, size=num_trials)
     ratios = [
         rng.integers(low=1, high=20, size=num_splits[i])
@@ -249,26 +198,26 @@ def test_mirror_split2(exp12):
         total_len = sum([len(s) for s in splits])
         assert total_len == orig_len
         # The cluster count is also the same.
-        expected_num_clusters = len(exp12.cluster_ids)
+        expected_num_clusters = len(dc_rec12.cluster_ids)
         for split in splits:
             assert len(split.cluster_ids) == expected_num_clusters
 
     def check_split1_values(ratio, splits):
         split1_len = splits[0].stimulus.shape[0]
         test_len = split1_len // 2
-        orig_stim = exp12.stimulus[:test_len]
-        orig_spikes = exp12.spikes[:test_len]
+        orig_stim = dc_rec12.stimulus[:test_len]
+        orig_spikes = dc_rec12.spikes[:test_len]
         np.testing.assert_array_equal(orig_stim, splits[0].stimulus[:test_len])
         np.testing.assert_array_equal(orig_spikes, splits[0].spikes[:test_len])
 
     # Test
     for i in range(num_trials):
-        splits = mea.mirror_split(exp12, ratios[i].tolist())
+        splits = mea.mirror_split(dc_rec12, ratios[i].tolist())
         check_sizes(ratios[i], splits)
         check_split1_values(ratios[i], splits)
 
 
-def test_decompress_recording(comp_exp12):
+def test_decompress_recording(rec12):
     """
     Test decompressing a recording.
 
@@ -278,14 +227,14 @@ def test_decompress_recording(comp_exp12):
     """
     # Test 1
     downsample = 18
-    orig_freq = comp_exp12.sensor_sample_rate
+    orig_freq = rec12.sensor_sample_rate
     expected_sample_rate = orig_freq / downsample
-    res = mea.decompress_recording(comp_exp12, downsample)
+    res = mea.decompress_recording(rec12, downsample)
     assert res.sample_rate == pytest.approx(expected_sample_rate)
 
     # Test 2
     downsample = 100
-    res = mea.decompress_recording(comp_exp12, downsample)
+    res = mea.decompress_recording(rec12, downsample)
     max_per_bucket = np.max(res.spikes)
     assert max_per_bucket == 3
 
@@ -847,7 +796,7 @@ def test_labeled_spike_snippets():
         np.testing.assert_equal(cluster_ids, expected_cluster_ids2[idx])
 
 
-def test_write_rec_snippets(tmp_path, comp_exp12):
+def test_write_rec_snippets(tmp_path, rec12):
     # Setup
     snippet_len = 7
     snippet_pad = 1
@@ -860,7 +809,7 @@ def test_write_rec_snippets(tmp_path, comp_exp12):
     # TODO: add some more checks.
     # Currently, the test only checks that the method runs to completion.
     mea._write_rec_snippets(
-        comp_exp12,
+        rec12,
         tmp_path,
         id_for_folder_name,
         downsample,

@@ -154,6 +154,7 @@ RUN pip install \
 		semantic_version \
 		dash \
 		jupyter-dash \
+		scinot \
 		mypy
 
 RUN jupyter lab build # needed for Dash. Very annoying. Takes ages.
