@@ -4,6 +4,7 @@ import logging
 import pathlib
 from typing import Iterable
 import math
+import copy
 
 import yaml
 
@@ -19,6 +20,7 @@ import scipy
 import torch
 import plotly.io
 import torchinfo
+import einops
 
 
 DEFAULT_OUT_BASE_DIR = "./out/"
@@ -440,7 +442,6 @@ class DistFieldTrainable_(retinapy.train.Trainable):
     MIN_DIST: float = 0.5
     DEFAULT_EVAL_LENGTHS_MS = [10, 50, 100]
     DEFAULT_MAX_EVAL_COUNT = int(5e5)
-    DEFAULT_DIST_NORM = 20
 
     def __init__(
         self,
@@ -467,7 +468,7 @@ class DistFieldTrainable_(retinapy.train.Trainable):
             self.eval_lengths_ms = eval_lengths
         self.max_eval_count = self.DEFAULT_MAX_EVAL_COUNT
         # Insure the model output has a mean not too far from 0.
-        MAX_MODEL_OUTPUT = 2
+        MAX_MODEL_OUTPUT = 3.4
         self.output_offset = (
             # log(max_distance) - OFFSET = MAX_MODEL_OUTPUT
             math.log(self.ms_to_bins(DIST_CLAMP_MS))
@@ -1084,7 +1085,9 @@ class TransformerTGroup(TrainableGroup):
         return f"Transformer-{config.downsample}" f"ds_{config.input_len}in"
 
     @staticmethod
-    def create_trainable(recordings, config, opt):
+    def create_trainable(
+        recordings, config, opt, num_recs=None, max_num_clusters=None
+    ):
         # There is separation between the target inference duration, say 10ms,
         # and the output length of the model, say 20ms. The model output should
         # be at least as large as the target inference duration, and it will
@@ -1104,12 +1107,14 @@ class TransformerTGroup(TrainableGroup):
             stride=opt.stride,
             num_workers=opt.num_workers,
         )
+        num_recs = num_recs if num_recs else len(recordings)
         max_num_clusters = max([len(r.cluster_ids) for r in recordings])
+        max_num_clusters = max_num_clusters if max_num_clusters else max_num_clusters
         model = retinapy.models.TransformerModel(
             config.input_len,
             model_out_len,
             stim_downsample=stim_ds,
-            num_recordings=len(recordings),
+            num_recordings=num_recs,
             num_clusters=max_num_clusters,
             z_dim=opt.zdim,
             num_heads=opt.num_heads,
