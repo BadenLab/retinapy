@@ -42,6 +42,22 @@ def test_load_recorded_stimulus():
         assert res.shape == known_shape
 
 
+@pytest.fixture
+def stimulus_pattern():
+    return mea.load_stimulus_pattern(FF_NOISE_PATTERN_PATH)
+
+
+@pytest.fixture
+def recorded_stimulus():
+    return mea.load_recorded_stimulus(FF_RECORDED_NOISE_PATH)
+
+
+@pytest.fixture
+def response_data():
+    return mea.load_response(FF_SPIKE_RESPONSE_PATH)
+
+
+
 def test_recording_names(response_data):
     known_list = [
         "Chicken_04_08_21_Phase_01",
