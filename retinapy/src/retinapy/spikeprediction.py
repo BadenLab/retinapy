@@ -608,46 +608,6 @@ class DistFieldTrainable_(retinapy.train.Trainable):
         return fig
 
 
-class TransformerTrainable(DistFieldTrainable_):
-    def __init__(
-        self, train_ds, val_ds, test_ds, model, model_label, eval_lengths
-    ):
-        super().__init__(
-            train_ds, val_ds, test_ds, model, model_label, eval_lengths
-        )
-        self.dist_loss_fn = retinapy.models.dist_loss
-
-    def loss(self, m_dist, target):
-        batch_size = m_dist.shape[0]
-        batch_sum = retinapy.models.dist_loss(m_dist, target)
-        batch_ave = batch_sum / batch_size
-        return batch_ave
-
-    def forward(self, sample):
-        # Don't use the position encoding. # TODO: remove it at some point.
-        masked_snippet = (
-            sample["snippet"][:, 0 : mea.NUM_STIMULUS_LEDS + 1].float().cuda()
-        )
-        dist = sample["dist"].float().cuda()
-        model_output = self.model(masked_snippet)
-        # Dist model
-        y = self.distfield_to_nn_output(dist)
-        loss = self.loss(model_output, target=y)
-        return model_output, loss
-
-    def model_summary(self, sample):
-        masked_snippet = (
-            sample["snippet"][:, 0 : mea.NUM_STIMULUS_LEDS + 1].float().cuda()
-        )
-        res = torchinfo.summary(
-            self.model,
-            input_data=masked_snippet,
-            col_names=["input_size", "output_size", "mult_adds", "num_params"],
-            device=self.in_device,
-            depth=4,
-        )
-        return res
-
 
 class DistFieldVAETrainable(DistFieldTrainable_):
     def __init__(
@@ -1110,8 +1070,8 @@ class TransformerTGroup(TrainableGroup):
             num_workers=opt.num_workers,
         )
         num_recs = num_recs if num_recs else len(recordings)
-        max_num_clusters = max([len(r.cluster_ids) for r in recordings])
-        max_num_clusters = max_num_clusters if max_num_clusters else max_num_clusters
+        calc_max_num_clusters = max([len(r.cluster_ids) for r in recordings])
+        max_num_clusters = max_num_clusters if max_num_clusters else calc_max_num_clusters
         model = retinapy.models.TransformerModel(
             config.input_len,
             model_out_len,
@@ -1123,6 +1083,57 @@ class TransformerTGroup(TrainableGroup):
             head_dim=opt.head_dim,
             num_tlayers=opt.num_tlayers,
             spike_patch_len=spike_patch_len,
+        )
+        res = DistFieldVAETrainable(
+            train_ds,
+            val_ds,
+            test_ds,
+            model,
+            DistFieldCnnTGroup.trainable_label(config),
+            eval_lengths=[10, 20, 50],
+            vae_beta=opt.vae_beta,
+        )
+        return res
+
+
+class ClusteringTGroup(TrainableGroup):
+    @staticmethod
+    def trainable_label(config):
+        return f"ClusterTransformer-{config.downsample}" f"ds_{config.input_len}in"
+
+    @staticmethod
+    def create_trainable(
+        recordings, config, opt, num_recs=None, max_num_clusters=None
+    ):
+        # There is separation between the target inference duration, say 10ms,
+        # and the output length of the model, say 20ms. The model output should
+        # be at least as large as the target inference duration, and it will
+        # probably benefit in being larger.
+        model_out_len = {1984: 200, 992: 150, 3174: 400, 1586: 200}[
+            config.input_len
+        ]
+        stim_ds = {1984: 6, 992: 5, 3174: 7, 1586: 6}[config.input_len]
+        train_ds, val_ds, test_ds = create_multi_cluster_df_datasets(
+            recordings,
+            config.input_len,
+            model_out_len,
+            config.downsample,
+            stride=opt.stride,
+            num_workers=opt.num_workers,
+        )
+        num_recs = num_recs if num_recs else len(recordings)
+        calc_max_num_clusters = max([len(r.cluster_ids) for r in recordings])
+        max_num_clusters = max_num_clusters if max_num_clusters else calc_max_num_clusters
+        model = retinapy.models.ClusteringTransformer(
+            config.input_len,
+            model_out_len,
+            stim_downsample=stim_ds,
+            num_recordings=num_recs,
+            num_clusters=max_num_clusters,
+            z_dim=opt.zdim,
+            num_heads=opt.num_heads,
+            head_dim=opt.head_dim,
+            num_tlayers=opt.num_tlayers,
         )
         res = DistFieldVAETrainable(
             train_ds,
@@ -1202,6 +1213,7 @@ def _train(out_dir, opt):
         "DistFieldCnn": DistFieldCnnTGroup,
         "MultiClusterDistField": MultiClusterDistFieldTGroup,
         "Transformer": TransformerTGroup,
+        "ClusterTransformer": ClusteringTGroup,
     }
 
     def run_id(model_str, config):

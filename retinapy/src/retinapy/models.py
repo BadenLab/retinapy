@@ -654,6 +654,118 @@ class MultiClusterModel(nn.Module):
         return x, z_mu, z_logvar
 
 
+class ClusteringTransformer(nn.Module):
+    def __init__(
+        self, in_len, out_len, stim_downsample, num_recordings, num_clusters,
+        z_dim=2, num_heads=8, head_dim=64, num_tlayers=6):
+        super().__init__()
+        self.in_len = in_len
+        self.num_recordings = num_recordings
+        self.num_clusters = num_clusters
+        self.z_dim = z_dim
+        # Stimulus CNN
+        k0_size = 21
+        k1_size = 7
+        expansion = 1
+        self.l0a_num_channels = 10
+        self.l0b_num_channels = 20
+        self.l1_num_channels = 100
+        self.cnn = nn.Sequential(
+            nn.Conv1d(
+                mea.NUM_STIMULUS_LEDS * 2,  # stimulus + mean(stimulus)
+                self.l0a_num_channels,
+                kernel_size=k0_size,
+                stride=2,
+                padding=(k0_size - 1) // 2,
+                bias=True,
+            ),
+            nn.LeakyReLU(0.2, True),
+            nn.Conv1d(
+                self.l0a_num_channels,
+                self.l0b_num_channels,
+                kernel_size=k0_size,
+                stride=1,
+                padding=(k0_size - 1) // 2,
+                bias=False,
+            ),
+            retinapy.nn.create_batch_norm(self.l0b_num_channels),
+            nn.LeakyReLU(0.2, True),
+            *[
+                retinapy.nn.ResBlock1d(
+                    self.l1_num_channels if i else self.l0b_num_channels,
+                    self.l1_num_channels * expansion,
+                    self.l1_num_channels,
+                    kernel_size=k1_size,
+                    downsample=True,
+                )
+                for i in range(stim_downsample - 1)
+            ],
+        )
+        
+        self.embed_dim = 128
+        # VAE
+        self.vae = VAE(
+            self.num_recordings * self.num_clusters, 
+            z_n=self.z_dim, 
+            h1_n=32,
+            h2_n=32,
+            out_n=self.embed_dim)
+        # Transformer
+        self.stim_embed = nn.Conv1d(
+            self.l1_num_channels, self.embed_dim, kernel_size=1
+        )
+        # Normally initialized nn.Parameter
+        # 1092 = 992 + 100
+        in_stim_len = self.in_len + out_len
+        enc_stim_len = 1 + (in_stim_len - 1) // (2**stim_downsample)
+        enc_len = enc_stim_len + 1 # 1 for VAE encoding.
+        self.pos_embed = nn.Parameter(torch.randn(enc_len, self.embed_dim))
+
+        mlp_expansion = 3
+        self.transformer = retinapy.nn.Transformer(
+            self.embed_dim,
+            num_layers=num_tlayers,
+            num_heads=num_heads,
+            head_dim=head_dim,
+            mlp_dim=self.embed_dim * mlp_expansion,
+        )
+        self.decode = nn.Sequential(
+            nn.Linear(self.embed_dim, 1),
+            einops.layers.torch.Rearrange("b c 1 -> b c"),
+            nn.Linear(enc_len, out_len),
+        )
+
+    def cat_mean(self, stim):
+        m = (
+            stim[:, 0 : mea.NUM_STIMULUS_LEDS]
+            .mean(dim=2, keepdim=True)
+            .expand(-1, -1, stim.shape[-1])
+        )
+        x = torch.cat([stim, m], dim=1)
+        return x
+
+    def encode_stimulus(self, stim):
+        x = self.cat_mean(stim)
+        x = self.cnn(x)
+        x = self.stim_embed(x)
+        x = einops.rearrange(x, "b c l -> b l c")
+        return x
+
+    def encode_vae(self, rec_id, cluster_id):
+        id_ = rec_id * self.num_clusters + cluster_id
+        z_decode, z_mu, z_logvar = self.vae(id_)
+        return z_decode, z_mu, z_logvar
+
+    def forward(self, snippet, rec_id, cluster_id):
+        z_decode, z_mu, z_logvar = self.encode_vae(rec_id, cluster_id)
+        x_stim = self.encode_stimulus(snippet[:, 0:-1])
+        z = einops.rearrange(z_decode, "b c -> b () c")
+        x = torch.cat([x_stim, z], dim=1)
+        x = x + self.pos_embed
+        x = self.transformer(x)
+        x = self.decode(x)
+        return x, z_mu, z_logvar
+
 class TransformerModel(nn.Module):
     def __init__(
         self, in_len, out_len, stim_downsample, num_recordings, num_clusters,
@@ -788,8 +900,8 @@ class DistanceFieldCnnModel(nn.Module):
         super(DistanceFieldCnnModel, self).__init__()
         self.in_len = in_len
         self.out_len = out_len
-        # led_channels, mean(led_channels), num_clusters, pos_encoding
-        self.num_input_channels = self.LED_CHANNELS * 2 + self.NUM_CLUSTERS + 1
+        # led_channels, mean(led_channels), num_clusters 
+        self.num_input_channels = self.LED_CHANNELS * 2 + self.NUM_CLUSTERS
         self.l1_num_channels = 50
         self.l2_num_channels = 50
         self.l3_num_channels = 100
