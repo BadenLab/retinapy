@@ -124,7 +124,9 @@ class SpikeCountDataset(torch.utils.data.Dataset):
 
         Index is one-to-one with the timesteps in the recording.
         """
-        rec, spikes = self.ds[idx]
+        sample = self.ds[idx]
+        rec = sample["stimulus"]
+        spikes = sample["spikes"]
         X_stim = rec[:, 0 : self.input_len]
         X_spikes = spikes[0 : self.input_len]
         X = np.vstack((X_stim, X_spikes))

@@ -399,12 +399,14 @@ class LinearNonLinearTrainable(retinapy.train.Trainable):
         targets = torch.cat(targets)
         acc = (predictions == targets).float().mean().item()
         pearson_corr = scipy.stats.pearsonr(predictions, targets)[0]
-        metrics = [
+        results = {
+        "metrics": [
             retinapy._logging.Metric("loss", loss_meter.avg, increasing=False),
             retinapy._logging.Metric("accuracy", acc),
             retinapy._logging.Metric("pearson_corr", pearson_corr),
         ]
-        return metrics
+        }
+        return results
 
 
 class DistFieldTrainable_(retinapy.train.Trainable):
