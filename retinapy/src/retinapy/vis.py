@@ -477,11 +477,11 @@ def distfield_model_in_out(
     # however, there are just enough differences for it to be not so easy.
 
     fig = plotly.subplots.make_subplots(
-        rows=3,
+        rows=6,
         cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.05,
-        row_width=[0.4, 0.15, 0.45],
+        vertical_spacing=0.02,
+        #row_width=[0.15, 0.15, 0.15, 0.15, 0.15, 0.45],
         x_title=create_axis_title("time", "ms"),
     )
 
@@ -493,12 +493,18 @@ def distfield_model_in_out(
         fig.append_trace(
             go.Scatter(
                 x=xs,
-                y=stimulus[idx, :] + idx/10,
+                y=stimulus[idx, :],
                 line_color=stim.display_hex,
                 name=f"{stim.wavelength} nm",
                 mode="lines",
             ),
-            row=1,
+            row=idx+1,
+            col=1,
+        )
+        fig.update_yaxes(
+            {"tickmode": "array", "tickvals": [-1, 0, 1], "fixedrange": True,
+            "title_text": ['R', 'G', 'B', 'UV'][idx], "title_standoff": 0 },
+            row=idx+1,
             col=1,
         )
     if pos_enc is not None:
@@ -510,7 +516,7 @@ def distfield_model_in_out(
                 name="pos enc",
                 mode="lines",
             ),
-            row=1,
+            row=5,
             col=1,
         )
 
@@ -523,12 +529,13 @@ def distfield_model_in_out(
             name="sum",
             mode="lines",
         ),
-        row=2,
+        row=5,
         col=1,
     )
     fig.update_yaxes(
-        {"tickmode": "array", "tickvals": [-5, 0, 5], "fixedrange": True},
-        row=2,
+        {"tickmode": "array", "tickvals": [-5, 0, 5], "fixedrange": True,
+        "range": [-6, 6]},
+        row=5,
         col=1,
     )
 
@@ -557,7 +564,7 @@ def distfield_model_in_out(
             line_color="gray",
         ),
         col=1,
-        row=3,
+        row=6,
     )
     fig.append_trace(
         go.Scatter(
@@ -568,9 +575,9 @@ def distfield_model_in_out(
             line_color="tomato",
         ),
         col=1,
-        row=3,
+        row=6,
     )
-    fig.update_yaxes({"range": [-4, 4]}, row=3, col=1)
+    fig.update_yaxes({"range": [-4, 4]}, row=6, col=1)
     # Cover the whole output region with a vrect to separate the regions.
     fig.add_vrect(
         x0=xs[mask_start_idx],
@@ -578,7 +585,7 @@ def distfield_model_in_out(
         fillcolor="aqua",
         opacity=0.25,
         col=1,
-        row=3,
+        row=6,
         line_width=0,
         layer="below",
     )
@@ -588,35 +595,33 @@ def distfield_model_in_out(
     for idx in index_of_spikes:
         spike_loc = start_ms + idx * bin_duration_ms
         fig.add_vline(
-            x=spike_loc, line_color="tomato", line_dash="dot", row=3, col=1
+            x=spike_loc, line_color="tomato", line_dash="dot", row=6, col=1
         )
 
     # Set a default layout.
     fig.update_layout(default_fig_layout())
     # Create title
-    main_title_str = "Distfield model input-output"
+    main_title_str = "Spike distance model input-output"
     if cluster_label is not None:
         main_title_str += f" ({cluster_label})"
     title = create_title(
         main_title_str,
-        "Output region is highlight blue. Spikes are red v-lines.",
+        "Output region is highlight blue. Spikes are red dashed lines.",
     )
     fig.update_layout(
         {
             "title": {"text": title},
-            "margin": {"t": 70},
-            # The title and xaxis label fit within the margin, so it needs
-            # to be big enough to fit them.
-            "yaxis": {
-                "title": {"text": create_axis_title("stimulus", "no units")},
-                "fixedrange": True,
-                # The range is dependent on the agumentation.
-                "range": [-2, 2],
-                "tickmode": "array",
-                "tickvals": [-1, 0, 1],
-            },
+            "height": 600,
+            "margin": {"t": 70, "l": 100},
         }
     )
+    fig.add_annotation(text=create_axis_title("RGB-UV stimulus (normalized)", "no units"),
+                  xref="paper", yref="paper", #font_color="grey",
+                  x=-0.1, y=0.8, textangle=-90, showarrow=False)
+    fig.add_annotation(text="<span style=''>spike distance<br>(log, normalized)<br>"
+                       "<span style='font-size:90%;whitespace:pre;color:grey'>log(ms)</span>",
+                  xref="paper", yref="paper", #font_color="grey",
+                  x=1.15, y=0.0, showarrow=False)
     return fig
 
 
