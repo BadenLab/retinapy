@@ -48,8 +48,8 @@ def test_DistFieldDataset(exp12_1kHz):
     target_spikes = sample["target_spikes"]
     dist_field = sample["dist"]
     # 3.1. The shapes should be correct.
-    # The first dimension: LEDs (4), spikes (1), and position encoding (1).
-    assert masked_snippet.shape == (mea.NUM_STIMULUS_LEDS + 2, snippet_len)
+    # The first dimension: LEDs (4) and spikes (1).
+    assert masked_snippet.shape == (mea.NUM_STIMULUS_LEDS + 1, snippet_len)
     assert target_spikes.shape == mask_shape
     assert dist_field.shape == mask_shape
     # 3.2 The target spikes should be float array, with mostly zeros.

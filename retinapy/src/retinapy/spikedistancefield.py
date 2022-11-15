@@ -194,7 +194,7 @@ def mle_inference_from_df(
             zero_spike_memo[i, j] = energy
 
     global_best_energy = math.inf
-    low_energy_positions = dist[dist < 20]
+    low_energy_positions = dist < 20
 
     def _dfs(a, b, energy_so_far, num_allowed_spikes) -> Tuple[float, Tuple[int, ...]]:
         nonlocal global_best_energy
