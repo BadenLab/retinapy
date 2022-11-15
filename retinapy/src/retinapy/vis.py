@@ -445,6 +445,7 @@ def distfield_model_in_out(
     target_dist: np.ndarray,
     model_out: np.ndarray,
     pos_enc: Optional[np.ndarray] = None,
+    out_spikes: Optional[np.ndarray] = None,
     start_ms=0,
     bin_duration_ms=1.0,
     cluster_label=None,
@@ -590,13 +591,22 @@ def distfield_model_in_out(
         layer="below",
     )
 
-    # 4. The vertical lines marking the input spikes.
+    # 4.1. The vertical lines marking the input spikes.
     index_of_spikes = np.flatnonzero(in_spikes > 0)
     for idx in index_of_spikes:
         spike_loc = start_ms + idx * bin_duration_ms
         fig.add_vline(
             x=spike_loc, line_color="tomato", line_dash="dot", row=6, col=1
         )
+
+    # 4.2. The vertical lines marking the output spikes.
+    if out_spikes is not None:
+        index_of_spikes = np.flatnonzero(out_spikes > 0) + mask_start_idx
+        for idx in index_of_spikes:
+            spike_loc = start_ms + idx * bin_duration_ms
+            fig.add_vline(
+                x=spike_loc, line_color="gray", line_dash="dot", row=6, col=1
+            )
 
     # Set a default layout.
     fig.update_layout(default_fig_layout())
