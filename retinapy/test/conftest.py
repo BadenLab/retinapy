@@ -3,6 +3,7 @@ import numpy as np
 import random as rand
 
 import retinapy.mea as mea
+import pathlib
 
 
 @pytest.fixture
@@ -16,30 +17,18 @@ def np_rng():
     return np.random.default_rng(123)
 
 
-FF_NOISE_PATTERN_PATH = "./data/ff_noise.h5"
-FF_RECORDED_NOISE_PATH = "./data/ff_recorded_noise.pickle"
-FF_SPIKE_RESPONSE_PATH = "./data/ff_spike_response.pickle"
+DATA_DIR = pathlib.Path("./data/ff_noise_recordings")
 
 
 @pytest.fixture
-def rec0(stimulus_pattern, recorded_stimulus, response_data):
-    exp = mea.single_3brain_recording(
-        "Chicken_04_08_21_Phase_01",
-        stimulus_pattern,
-        recorded_stimulus,
-        response_data,
-    )
+def rec0():
+    exp = mea.single_3brain_recording("Chicken_04_08_21_Phase_01", DATA_DIR)
     return exp
 
 
 @pytest.fixture
-def rec12(stimulus_pattern, recorded_stimulus, response_data):
-    exp = mea.single_3brain_recording(
-        "Chicken_17_08_21_Phase_00",
-        stimulus_pattern,
-        recorded_stimulus,
-        response_data,
-    )
+def rec12():
+    exp = mea.single_3brain_recording("Chicken_17_08_21_Phase_00", DATA_DIR)
     return exp
 
 
@@ -64,9 +53,7 @@ def five_recs():
     5 is just a small number for testing.
     """
     return mea.load_3brain_recordings(
-        FF_NOISE_PATTERN_PATH,
-        FF_RECORDED_NOISE_PATH,
-        FF_SPIKE_RESPONSE_PATH,
+        DATA_DIR,
         include=[
             "Chicken_04_08_21_Phase_01",
             "Chicken_04_08_21_Phase_02",

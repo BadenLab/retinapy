@@ -9,13 +9,15 @@ import pandas as pd
 
 import pytest
 import retinapy.mea as mea
+import pathlib
 
 
-FF_NOISE_PATTERN_PATH = "./data/ff_noise.h5"
-FF_SPIKE_RESPONSE_PATH = "./data/ff_spike_response.pickle"
-FF_SPIKE_RESPONSE_PATH_ZIP = "./data/ff_spike_response.pickle.zip"
-FF_RECORDED_NOISE_PATH = "./data/ff_recorded_noise.pickle"
-FF_RECORDED_NOISE_PATH_ZIP = "./data/ff_recorded_noise.pickle.zip"
+DATA_DIR = pathlib.Path("./data/ff_noise_recordings")
+FF_NOISE_PATTERN_PATH = DATA_DIR / "stimulus_pattern.h5"
+FF_SPIKE_RESPONSE_PATH = DATA_DIR / "spike_response.pickle"
+FF_SPIKE_RESPONSE_PATH_ZIP = DATA_DIR / "spike_response.pickle.zip"
+FF_RECORDED_NOISE_PATH = DATA_DIR / "recorded_stimulus.pickle"
+FF_RECORDED_NOISE_PATH_ZIP = DATA_DIR / "recorded_stimulus.pickle.zip"
 
 
 def test_load_stimulus_pattern():
@@ -57,7 +59,6 @@ def response_data():
     return mea.load_response(FF_SPIKE_RESPONSE_PATH)
 
 
-
 def test_recording_names(response_data):
     known_list = [
         "Chicken_04_08_21_Phase_01",
@@ -95,9 +96,7 @@ def test_cluster_ids(response_data):
 def test_load_3brain_recordings():
     # Test
     res = mea.load_3brain_recordings(
-        FF_NOISE_PATTERN_PATH,
-        FF_RECORDED_NOISE_PATH,
-        FF_SPIKE_RESPONSE_PATH,
+        DATA_DIR,
         include=[
             "Chicken_04_08_21_Phase_01",
             "Chicken_04_08_21_Phase_02",
@@ -268,7 +267,7 @@ def test_single_3brain_recording(
     # Setup
     expected_num_samples = 16071532
     # Test
-    rec = mea.single_3brain_recording(
+    rec = mea._single_3brain_recording(
         "Chicken_17_08_21_Phase_00",
         stimulus_pattern,
         recorded_stimulus,
@@ -284,7 +283,7 @@ def test_single_3brain_recording(
     # Setup
     cluster_ids = {13, 14, 202, 1485}
     # Test
-    rec = mea.single_3brain_recording(
+    rec = mea._single_3brain_recording(
         "Chicken_17_08_21_Phase_00",
         stimulus_pattern,
         recorded_stimulus,
@@ -304,7 +303,7 @@ def test_single_3brain_recording(
     }
     # Test
     with pytest.raises(ValueError):
-        mea.single_3brain_recording(
+        mea._single_3brain_recording(
             "Chicken_17_08_21_Phase_00",
             stimulus_pattern,
             recorded_stimulus,
@@ -634,29 +633,6 @@ def test_spike_snippets():
     )
 
 
-def test_save_recording_names(tmp_path, response_data):
-    rec_names = mea.recording_names(response_data)
-    path = mea._save_recording_names(rec_names, tmp_path)
-    expected_path = tmp_path / mea.REC_NAMES_FILENAME
-    assert path == expected_path
-    assert expected_path.is_file()
-    with open(expected_path, "rb") as f:
-        contents = pickle.load(f)
-    assert contents == rec_names
-
-
-def test_save_cluster_ids(tmp_path, response_data):
-    rec_name = "Chicken_13_08_21_Phase_00"
-    cluster_ids = mea._cluster_ids(response_data, rec_name)
-    path = mea._save_cluster_ids(cluster_ids, tmp_path)
-    expected_path = tmp_path / mea.CLUSTER_IDS_FILENAME
-    assert path == expected_path
-    assert expected_path.is_file()
-    with open(expected_path, "rb") as f:
-        contents = pickle.load(f)
-    assert contents == cluster_ids
-
-
 def test_labeled_spike_snippets():
     """
     Create a fake response `DataFrame` and check that the spike snippets are
@@ -810,27 +786,3 @@ def test_labeled_spike_snippets():
     ):
         np.testing.assert_equal(spwin, expected_spike_snippets2[idx])
         np.testing.assert_equal(cluster_ids, expected_cluster_ids2[idx])
-
-
-def test_write_rec_snippets(tmp_path, rec12):
-    # Setup
-    snippet_len = 7
-    snippet_pad = 1
-    empty_snippets = 0
-    snippets_per_file = 100
-    downsample = 18
-    id_for_folder_name = 5
-
-    # Test
-    # TODO: add some more checks.
-    # Currently, the test only checks that the method runs to completion.
-    mea._write_rec_snippets(
-        rec12,
-        tmp_path,
-        id_for_folder_name,
-        downsample,
-        snippet_len,
-        snippet_pad,
-        empty_snippets,
-        snippets_per_file,
-    )

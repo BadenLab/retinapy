@@ -27,11 +27,10 @@ import h5py
 
 ELECTRODE_FREQ = 17852.767845719834  # Hz
 NUM_STIMULUS_LEDS = 4
-REC_NAMES_FILENAME = "recording_names.pickle"
-CLUSTER_IDS_FILENAME = "cluster_ids.pickle"
-IDS_FILE_PATTERN = "{part}_ids.npy"
-SNIPPET_FILE_PATTERN = "{part}_snippets.npy"
-RNG_SEED = 123
+STIMULUS_PATTERN_FILENAME = "stimulus_pattern.h5"
+SPIKE_RESPONSE_FILENAME = "spike_response.pickle"
+RECORDED_STIMULUS_FILENAME = "recorded_stimulus.pickle"
+
 
 Stimulus = namedtuple(
     "Stimulus", ["name", "wavelength", "channel", "display_hex", "import_name"]
@@ -348,7 +347,7 @@ def mirror_split(recording: SpikeRecording, split_ratio: Sequence[int]):
     return splits
 
 
-def load_stimulus_pattern(file_path: str) -> np.ndarray:
+def load_stimulus_pattern(file_path: Union[pathlib.Path, str]) -> np.ndarray:
     """
     Loads the stimulus data from the HDF5 file as a Pandas DataFrame.
 
@@ -359,6 +358,7 @@ def load_stimulus_pattern(file_path: str) -> np.ndarray:
         - values are 0 or 1 representing whether the corresponding LED is ON
           or OFF at the given stimulus frame.
     """
+    file_path = pathlib.Path(file_path)
     with h5py.File(file_path, "r") as f:
         # The data has shape: [4, 24000, 10374]. This corresponds to 4 lights,
         # on-off pattern for 20min at 20 Hz (24000 periods), and 10374 boxes
@@ -385,7 +385,9 @@ def load_stimulus_pattern(file_path: str) -> np.ndarray:
     return colour_noise
 
 
-def load_response(file_path: str, keep_kernels=False) -> pd.DataFrame:
+def load_response(
+    file_path: Union[pathlib.Path, str], keep_kernels=False
+) -> pd.DataFrame:
     """Loads the spike data from a Pickle file as a Pandas DataFrame.
 
     The input path should point to standard pickle file (zipped or not).
@@ -413,7 +415,7 @@ def load_response(file_path: str, keep_kernels=False) -> pd.DataFrame:
     return res
 
 
-def load_recorded_stimulus(file_path: str) -> pd.DataFrame:
+def load_recorded_stimulus(file_path: Union[pathlib.Path, str]) -> pd.DataFrame:
     """Load the spike data from a Pickle file as a Pandas DataFrame."""
     res = pd.read_pickle(file_path, compression="infer")
     return res
@@ -441,10 +443,28 @@ def stim_and_spike_rows(
     return stim_row, response_rows
 
 
+def _assert_file_exists(p: pathlib.Path):
+    if not p.exists():
+        raise ValueError(f"File does not exist: ({p}).")
+    if not p.is_file():
+        raise ValueError(f"Path is not a file: ({p}).")
+
+
+def _load_data_files(data_dir: pathlib.Path):
+    stimulus_pattern_path = data_dir / STIMULUS_PATTERN_FILENAME
+    stimulus_recording_path = data_dir / RECORDED_STIMULUS_FILENAME
+    response_recording_path = data_dir / SPIKE_RESPONSE_FILENAME
+    _assert_file_exists(stimulus_pattern_path)
+    _assert_file_exists(stimulus_recording_path)
+    _assert_file_exists(response_recording_path)
+    stim_pattern = load_stimulus_pattern(stimulus_pattern_path)
+    stim_recordings = load_recorded_stimulus(stimulus_recording_path)
+    response_recordings = load_response(response_recording_path)
+    return stim_pattern, stim_recordings, response_recordings
+
+
 def load_3brain_recordings(
-    stimulus_pattern_path: str,
-    stimulus_recording_path: str,
-    response_recording_path: str,
+    data_dir: Union[str, pathlib.Path],
     include: Optional[Iterable[str]] = None,
     num_workers: int = 4,
 ) -> List[CompressedSpikeRecording]:
@@ -455,9 +475,13 @@ def load_3brain_recordings(
         include: a list of recording names to include.
         num_workers: how many threads can be used to load the data.
     """
-    stimulus_pattern = load_stimulus_pattern(stimulus_pattern_path)
-    stimulus_recordings = load_recorded_stimulus(stimulus_recording_path)
-    response_recordings = load_response(response_recording_path)
+    # Load the data. Do it once here.
+    data_dir = pathlib.Path(data_dir)
+    (
+        stimulus_pattern,
+        stimulus_recordings,
+        response_recordings,
+    ) = _load_data_files(data_dir)
     rec_names = recording_names(response_recordings)
     # Collect the recordings to load.
     to_load = []
@@ -468,7 +492,7 @@ def load_3brain_recordings(
     done = []
 
     def _load(rec_name):
-        rec_obj = single_3brain_recording(
+        rec_obj = _single_3brain_recording(
             rec_name, stimulus_pattern, stimulus_recordings, response_recordings
         )
         return rec_obj
@@ -491,6 +515,26 @@ def load_3brain_recordings(
 
 
 def single_3brain_recording(
+    rec_name: str,
+    data_dir: Union[pathlib.Path, str],
+    include_clusters: Optional[Set[int]] = None,
+) -> CompressedSpikeRecording:
+    data_dir = pathlib.Path(data_dir)
+    (
+        stimulus_pattern,
+        stimulus_recordings,
+        response_recordings,
+    ) = _load_data_files(data_dir)
+    return _single_3brain_recording(
+        rec_name,
+        stimulus_pattern,
+        stimulus_recordings,
+        response_recordings,
+        include_clusters,
+    )
+
+
+def _single_3brain_recording(
     rec_name: str,
     stimulus_pattern: np.ndarray,
     stimulus_recordings: pd.DataFrame,
@@ -971,204 +1015,3 @@ def labeled_spike_snippets(
     snippets = np.stack(snippets)
     cluster_ids = np.array(cluster_ids)
     return snippets, cluster_ids
-
-
-def generate_fake_spikes(
-    spikes,
-    num_fake_per_real,
-    target_sample_rate,
-    sensor_sample_rate,
-    min_dist_to_real_spike,
-    rng_seed=123,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Genrate fake spikes.
-
-    Spread the spikes over the duration of the recording. Don't generate
-    a fake spike too close to a real spike.
-
-    Between every two spikes, `num_fake_per_real` spikes will be generated.
-    Thus, total number of fake spikes will be
-
-        len(spikes) * `num_fake_per_real` -1.
-
-    Some details:
-
-        spikes:     |--------*------------*----------------------*-----------|
-        intervals shown by |-----| in which we can create fake spikes:
-                     |       * |--------| * |------------------| *           |
-
-    There is a buffer between the spikes and the intervals, this is
-    the `min_dist_to_real_spike`.
-
-    Within the intervals, we will try to create `snippets_per_spike` number
-    of fake spikes. From these spikes, snippets will be created.
-
-    The spikes are not chosen evenly within the intervals, but rather
-    there is some jitter. This is what the `rng_seed` parameter is for.
-
-    Args:
-        spikes: a sorted (ascending) list of spikes, in sensor samples.
-        num_fake_per_real: the number of fake spikes to generate between every
-            two real spikes.
-        target_sample_rate: the target sampling rate.
-        sensor_sapmle_rate: the sampling rate of the sensor.
-    """
-    if len(spikes) < 2:
-        raise ValueError(f"Need at least two spikes. Got ({len(spikes)}).")
-    # Convert spikes to the target sample space.
-
-    spikes = np.ndarray(spikes) * (target_sample_rate / sensor_sample_rate)
-
-    intervals = np.stack(
-        spikes[:-1] + min_dist_to_real_spike,
-        spikes[1:] - min_dist_to_real_spike,
-    )
-    sub_intervals = []
-
-    def split_interval(interval, n):
-        """Split an interval into n subintervals, of roughly equal size."""
-        d, m = divmod(interval, n)
-        return [
-            (i * d + min(i, m), (i + 1) * d + min(i + 1, m)) for i in range(n)
-        ]
-
-    for i in intervals:
-        sub_intervals.extend(split_interval(i, num_fake_per_real))
-
-    rng = np.random.default_rng(rng_seed)
-    fake_spikes = rng.random.integers(
-        *np.stack(sub_intervals, axis=1), endpoints=True
-    )
-    return fake_spikes
-
-
-def _save_recording_names(rec_list, save_dir) -> pathlib.Path:
-    """
-    Saves a list of recording names.
-
-    The list functions as an id to name map.
-    """
-    save_path = pathlib.Path(save_dir) / REC_NAMES_FILENAME
-    # Create out file
-    with save_path.open("wb") as f:
-        pickle.dump(rec_list, f)
-    return save_path
-
-
-def _save_cluster_ids(cell_cluster_ids, parent_dir) -> pathlib.Path:
-    """
-    Saves a list of cluster ids.
-
-    The list functions as an id to name map.
-    """
-    # Create if not exists
-    parent_dir.mkdir(parents=False, exist_ok=True)
-    save_path = parent_dir / "cluster_ids.pickle"
-    # Create out file
-    with save_path.open("wb") as f:
-        pickle.dump(cell_cluster_ids, f)
-    return save_path
-
-
-def create_snippet_training_data(
-    stimulus_pattern: np.ndarray,
-    recorded_stimulus: pd.DataFrame,
-    response: pd.DataFrame,
-    save_dir,
-    downsample_factor: int = 18,
-    snippet_len: int = 1000,
-    snippet_pad: int = 200,
-    empty_snippets: float = 0,
-    snippets_per_file: int = 1024,
-):
-    # TODO: WIP
-    save_dir = pathlib.Path(save_dir)
-    _save_recording_names(recording_names(response), save_dir)
-    # TODO: only use stimulus 1? What is stimulus 7?
-    by_rec = response.xs(1, level="Stimulus ID", drop_level=True).groupby(
-        "Recording"
-    )
-    for rec_id, (rec_name, df) in enumerate(by_rec):
-        stimulus, freq = decompress_and_decimate(
-            stimulus_pattern, recorded_stimulus, rec_name, downsample_factor
-        )
-        _write_rec_snippets(
-            stimulus,
-            df,
-            rec_name,
-            rec_id,
-            save_dir,
-            snippet_len,
-            snippet_pad,
-            freq,
-            empty_snippets,
-            snippets_per_file,
-        )
-
-
-def _write_rec_snippets(
-    rec: CompressedSpikeRecording,
-    data_root_dir,
-    rec_id: int,
-    downsample: int,
-    snippet_len: int,
-    snippet_pad: int,
-    empty_snippets: float,
-    snippets_per_file: int,
-):
-    """
-    Generate, shuffle and write the snippets for a single recording.
-
-    The snippets may be split across multiple files.
-    """
-    # Create directory for recording.
-    rec_dir = pathlib.Path(data_root_dir) / str(rec_id)
-    rec_dir.mkdir(parents=False, exist_ok=True)
-    # Extract the stimulus snippet around the spikes.
-    snippets, cluster_ids = labeled_spike_snippets(
-        rec,
-        snippet_len,
-        snippet_pad,
-    )
-    # Save the cluster ids.
-    _save_cluster_ids(cluster_ids, rec_dir)
-    assert len(cluster_ids) == len(snippets)
-    # Shuffle the cluster ids and snippets together.
-    rng = np.random.default_rng(RNG_SEED)
-    shuffle_idxs = np.arange(len(cluster_ids))
-    rng.shuffle(shuffle_idxs)
-    cluster_ids = cluster_ids[shuffle_idxs]
-    snippets = snippets[shuffle_idxs]
-    # Fill array with rec_id
-    rec_ids = np.full(len(cluster_ids), rec_id)
-    # Create 2 column array, recording ids and cluster ids.
-    # ([1, 1, 1, 1], [1, 2, 3, 4]) -> [[1, 1], [1, 2], [1, 3], [1, 4]]
-    rec_clusters = np.vstack((rec_ids, cluster_ids)).T
-
-    # Save the snippets and ids across multiple files.
-    def save_splits():
-        ids_split = np.array_split(rec_clusters, snippets_per_file)
-        snippets_split = np.array_split(snippets, snippets_per_file)
-        assert len(ids_split) == len(snippets_split)
-        for i, (ids, ks) in enumerate(zip(ids_split, snippets_split)):
-            _write_snippet_data_part(ids, ks, rec_dir, i)
-
-    save_splits()
-
-
-def _write_snippet_data_part(ids, snippets, save_dir, part_id):
-    """
-    Saves a subset of the spike snippets.
-
-    This is used internally to spread the snippets data over multiple files.
-    """
-    ids_filename = IDS_FILE_PATTERN.format(part=part_id)
-    win_filename = SNIPPET_FILE_PATTERN.format(part=part_id)
-    ids_save_path = pathlib.Path(save_dir) / ids_filename
-    win_save_path = pathlib.Path(save_dir) / win_filename
-    with ids_save_path.open("wb") as f:
-        np.save(f, ids)
-    with win_save_path.open("wb") as f:
-        np.save(f, snippets)
-    return ids_save_path, win_save_path

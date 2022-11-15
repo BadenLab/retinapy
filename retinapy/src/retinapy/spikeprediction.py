@@ -79,9 +79,7 @@ def arg_parsers():
 
     # Data
     data_group = parser.add_argument_group("Data parameters")
-    data_group.add_argument("--stimulus-pattern", type=str, default=None, metavar="FILE", help="Path to stimulus pattern file.")
-    data_group.add_argument("--stimulus", type=str, default=None, metavar="FILE", help="Path to stimulus recording file.")
-    data_group.add_argument("--response", type=str, default=None, metavar="FILE", help="Path to response recording file.")
+    data_group.add_argument("--data-dir", type=str, default=None, metavar="FILE", help="Path to stimulus pattern file.")
     data_group.add_argument("--recording-names", nargs='+', type=str, default=None, help="Names of recordings within the recording file.")
     data_group.add_argument("--cluster-ids", nargs='+', type=int, default=None, help="Cluster ID to train on.")
 
@@ -400,11 +398,13 @@ class LinearNonLinearTrainable(retinapy.train.Trainable):
         acc = (predictions == targets).float().mean().item()
         pearson_corr = scipy.stats.pearsonr(predictions, targets)[0]
         results = {
-        "metrics": [
-            retinapy._logging.Metric("loss", loss_meter.avg, increasing=False),
-            retinapy._logging.Metric("accuracy", acc),
-            retinapy._logging.Metric("pearson_corr", pearson_corr),
-        ]
+            "metrics": [
+                retinapy._logging.Metric(
+                    "loss", loss_meter.avg, increasing=False
+                ),
+                retinapy._logging.Metric("accuracy", acc),
+                retinapy._logging.Metric("pearson_corr", pearson_corr),
+            ]
         }
         return results
 
@@ -610,7 +610,6 @@ class DistFieldTrainable_(retinapy.train.Trainable):
         # The legend takes up a lot of space, so disable it.
         fig.update_layout(showlegend=False)
         return fig
-
 
 
 class DistFieldVAETrainable(DistFieldTrainable_):
@@ -1075,7 +1074,9 @@ class TransformerTGroup(TrainableGroup):
         )
         num_recs = num_recs if num_recs else len(recordings)
         calc_max_num_clusters = max([len(r.cluster_ids) for r in recordings])
-        max_num_clusters = max_num_clusters if max_num_clusters else calc_max_num_clusters
+        max_num_clusters = (
+            max_num_clusters if max_num_clusters else calc_max_num_clusters
+        )
         model = retinapy.models.TransformerModel(
             config.input_len,
             model_out_len,
@@ -1103,7 +1104,9 @@ class TransformerTGroup(TrainableGroup):
 class ClusteringTGroup(TrainableGroup):
     @staticmethod
     def trainable_label(config):
-        return f"ClusterTransformer-{config.downsample}" f"ds_{config.input_len}in"
+        return (
+            f"ClusterTransformer-{config.downsample}" f"ds_{config.input_len}in"
+        )
 
     @staticmethod
     def create_trainable(
@@ -1127,7 +1130,9 @@ class ClusteringTGroup(TrainableGroup):
         )
         num_recs = num_recs if num_recs else len(recordings)
         calc_max_num_clusters = max([len(r.cluster_ids) for r in recordings])
-        max_num_clusters = max_num_clusters if max_num_clusters else calc_max_num_clusters
+        max_num_clusters = (
+            max_num_clusters if max_num_clusters else calc_max_num_clusters
+        )
         model = retinapy.models.ClusteringTransformer(
             config.input_len,
             model_out_len,
@@ -1255,18 +1260,12 @@ def _train(out_dir, opt):
         recordings = [
             mea.single_3brain_recording(
                 opt.recording_names[0],
-                mea.load_stimulus_pattern(opt.stimulus_pattern),
-                mea.load_recorded_stimulus(opt.stimulus),
-                mea.load_response(opt.response),
+                opt.data_dir,
                 include_clusters=include_cluster_ids,
             )
         ]
     else:
-        recordings = mea.load_3brain_recordings(
-            opt.stimulus_pattern,
-            opt.stimulus,
-            opt.response,
-        )
+        recordings = mea.load_3brain_recordings(opt.data_dir)
         ## Filter the recording with non-standard sample rate
         skip_rec_names = {"Chicken_21_08_21_Phase_00"}
         recordings = [r for r in recordings if r.name not in skip_rec_names]

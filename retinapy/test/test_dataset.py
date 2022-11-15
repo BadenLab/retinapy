@@ -2,24 +2,15 @@ import pytest
 import retinapy.dataset as dataset
 import retinapy.mea as mea
 import numpy as np
+import pathlib
 
 
-FF_NOISE_PATTERN_PATH = "./data/ff_noise.h5"
-FF_SPIKE_RESPONSE_PATH = "./data/ff_spike_response.pickle"
-FF_RECORDED_NOISE_PATH = "./data/ff_recorded_noise.pickle"
+DATA_DIR = pathlib.Path("./data/ff_noise_recordings")
 
 
 @pytest.fixture
 def exp12_1kHz():
-    stimulus_pattern = mea.load_stimulus_pattern(FF_NOISE_PATTERN_PATH)
-    response_data = mea.load_response(FF_SPIKE_RESPONSE_PATH)
-    recorded_stimulus = mea.load_recorded_stimulus(FF_RECORDED_NOISE_PATH)
-    rec = mea.single_3brain_recording(
-        "Chicken_17_08_21_Phase_00",
-        stimulus_pattern,
-        recorded_stimulus,
-        response_data,
-    )
+    rec = mea.single_3brain_recording("Chicken_17_08_21_Phase_00", DATA_DIR)
     rec = mea.decompress_recording(rec, downsample=18)
     return rec
 
@@ -69,9 +60,7 @@ def test_DistFieldDataset(exp12_1kHz):
 @pytest.fixture
 def two_exps():
     recs = mea.load_3brain_recordings(
-        FF_NOISE_PATTERN_PATH,
-        FF_RECORDED_NOISE_PATH,
-        FF_SPIKE_RESPONSE_PATH,
+        DATA_DIR,
         include=["Chicken_04_08_21_Phase_01", "Chicken_20_08_21_Phase_00"],
     )
     dc_recs = mea.decompress_recordings(recs, downsample=18)

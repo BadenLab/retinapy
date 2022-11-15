@@ -3,20 +3,16 @@ import pytest
 import retinapy.spikeprediction as sp
 import retinapy.mea as mea
 import itertools
+import pathlib
 
-
-FF_NOISE_PATTERN_PATH = "./data/ff_noise.h5"
-FF_SPIKE_RESPONSE_PATH = "./data/ff_spike_response.pickle"
-FF_RECORDED_NOISE_PATH = "./data/ff_recorded_noise.pickle"
+DATA_DIR = pathlib.Path("./data/ff_noise_recordings")
 
 
 # TODO: move this to common test utils.
 @pytest.fixture
 def recs():
     res = mea.load_3brain_recordings(
-        FF_NOISE_PATTERN_PATH,
-        FF_RECORDED_NOISE_PATH,
-        FF_SPIKE_RESPONSE_PATH,
+        DATA_DIR,
         include=["Chicken_04_08_21_Phase_01", "Chicken_04_08_21_Phase_02"],
     )
     # Filter out some clusters
