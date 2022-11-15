@@ -488,6 +488,10 @@ class DistFieldTrainable_(retinapy.train.Trainable):
         return num_bins
 
     @property
+    def max_bin_dist(self):
+        return self.ms_to_bins(DIST_CLAMP_MS)
+
+    @property
     def sample_period_ms(self):
         return 1000 / self.sample_rate
 
