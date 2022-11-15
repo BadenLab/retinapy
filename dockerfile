@@ -1,4 +1,4 @@
-FROM nvidia/cuda:11.7.0-base-ubuntu20.04
+FROM nvidia/cuda:11.7.1-cudnn8-devel-ubuntu20.04
 #FROM pytorch/pytorch:latest
 
 # I edit the nvimrc too often for it to be a base image.
@@ -29,9 +29,9 @@ RUN mkdir out && chown $USER out
 # https://serverfault.com/questions/949991/how-to-install-tzdata-on-a-ubuntu-docker-image
 # https://stackoverflow.com/questions/51023312/docker-having-issues-installing-apt-utils/56569081#56569081
 ENV TZ=Europe/London
-RUN DEBIAN_FRONTEND=noninteractive \
-	apt-get update && apt-get install --no-install-recommends -y \
-	 tzdata
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive \
+    apt-get install --no-install-recommends -y \
+	tzdata
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
 	 curl \
@@ -41,8 +41,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 	 libxext6 \
      libxrender-dev \
 	 jq \
+	 locales \
 	 ffmpeg && \
 	 rm -rf /var/lib/apt/lists/*
+
+# Set the locale
+RUN locale-gen en_US.UTF-8  
+ENV LANG en_US.UTF-8  
+ENV LANGUAGE en_US:en  
+ENV LC_ALL en_US.UTF-8  
 
 ###############################################################################
 #
@@ -53,7 +60,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Set up the Conda environment (using Miniforge)
 ENV PATH=/home/$USER/mambaforge/bin:$PATH
 #COPY environment.yml /app/environment.yml
-RUN curl -sLo ./mambaforge.sh https://github.com/conda-forge/miniforge/releases/download/4.12.0-2/Mambaforge-4.12.0-2-Linux-x86_64.sh \
+RUN curl -sLo ./mambaforge.sh https://github.com/conda-forge/miniforge/releases/download/22.9.0-1/Mambaforge-22.9.0-1-Linux-x86_64.sh \
  && chmod +x ./mambaforge.sh \
  && ./mambaforge.sh -b -p /home/$USER/mambaforge \
  && rm ./mambaforge.sh \
@@ -61,86 +68,30 @@ RUN curl -sLo ./mambaforge.sh https://github.com/conda-forge/miniforge/releases/
 # && rm /app/environment.yml \
  && mamba clean -ya
 
+
 ###############################################################################
 # /Conda
 ###############################################################################
 
-
-###############################################################################
-#
-# Neovim
-# 	
-###############################################################################
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    software-properties-common && \
-	add-apt-repository ppa:neovim-ppa/unstable
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-	neovim  \
-	gcc \
-	make \
-	autoconf \
-	automake \
-	locales \
-	ripgrep \
-	fd-find && \
-	rm -rf /var/lib/apt/lists/*
-
-RUN pip install --upgrade pip && \
-	pip install neovim
-
-# Set the locale
-RUN locale-gen en_US.UTF-8  
-ENV LANG en_US.UTF-8  
-ENV LANGUAGE en_US:en  
-ENV LC_ALL en_US.UTF-8  
-
-RUN conda install --yes -c conda-forge nodejs'>=12.12.0' --repodata-fn=repodata.json
-
-###############################################################################
-# \Neovim
-###############################################################################
-
-RUN conda config --add channels conda-forge 
-RUN conda config --add channels pytorch
-RUN conda install --yes \
-	python=3.9 \
-	pip \
-	pytest \
-	numpy \
-	pandas \
-	scipy \
-	pytorch \
-	cudatoolkit=11.6 \
-	jupyterlab  \
-	matplotlib \
-	plotly \
-	build \
-	twine \
-	h5py \
-	scikit-learn \
-    #ipykernel>=6 \
-    # xeus-python \
-    ipywidgets && \
-	conda clean -ya
-
-RUN conda install -c conda-forge jupyterlab-spellchecker
-#RUN jupyter labextension install jupyterlab_vim
-# From: https://stackoverflow.com/questions/67050036/enable-jupyterlab-extensions-by-default-via-docker
-COPY --chown=$USER tools/jupyter_notebook_config.py /etc/jupyter/
-# Try to get Jupyter Lab to allow extensions on startup.
-# This file was found by diffing a container running jupyterlab that had 
-# extensions manually enabled.
-COPY --chown=$USER tools/plugin.jupyterlab-settings /home/$USER/.jupyter/lab/user-settings/@jupyterlab/extensionmanager-extension/
-# Getting some permission errors printed in terminal after running Jupyter Lab, 
-# and trying the below line to fix:
-RUN chown -R $USER:$USER /home/$USER/.jupyter
-
 RUN pip install --upgrade pip
 RUN pip install \
+		torch \
+		numpy \
+		build \
+		twine \
+		h5py \
         opencv-python \
+		pandas \
+		jupyterlab \
+		ipywidgets  \
 		jupyterlab-vim \
+		jupyter-dash \
+		jupyterlab-spellchecker \
+		matplotlib \
+		pytest \
+		scipy \
+		plotly \
+		scikit-learn \
         icecream \
 		bidict \ 
 		einops \
@@ -153,11 +104,28 @@ RUN pip install \
 		torchinfo \
 		semantic_version \
 		dash \
-		jupyter-dash \
 		scinot \
 		mypy
 
+RUN conda install --yes -c conda-forge nodejs'>=12.12.0'
+
+# From: https://stackoverflow.com/questions/67050036/enable-jupyterlab-extensions-by-default-via-docker
+COPY --chown=$USER tools/jupyter_notebook_config.py /etc/jupyter/
+# Try to get Jupyter Lab to allow extensions on startup.
+# This file was found by diffing a container running jupyterlab that had 
+# extensions manually enabled.
+COPY --chown=$USER tools/plugin.jupyterlab-settings /home/$USER/.jupyter/lab/user-settings/@jupyterlab/extensionmanager-extension/
+# Getting some permission errors printed in terminal after running Jupyter Lab, 
+# and trying the below line to fix:
+RUN chown -R $USER:$USER /home/$USER/.jupyter
+
+
 RUN jupyter lab build # needed for Dash. Very annoying. Takes ages.
+
+
+RUN pip install scikit-image moviepy
+
+
 USER root
 # In order to allow the Python package to be edited without
 # a rebuild, install all code as a volume. We will still copy the
