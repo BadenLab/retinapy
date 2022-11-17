@@ -28,11 +28,20 @@ __pycache__/
 .ipynb_checkpoints/
 
 # Svelte web app
-/web/node_modules
-/web/public/build
-/web/public/data_full/
-/web/public/data_pca/
-/web/data
+/snippet_viewer/node_modules
+/snippet_viewer/public/build
+/snippet_viewer/public/data_full/
+/snippet_viewer/public/data_pca/
+/snippet_viewer/public/data_pca2/
+/snippet_viewer/data
+
+/prediction_viewer/node_modules
+/prediction_viewer/build
+/prediction_viewer/.svelte-kit
+/prediction_viewer/package
+/prediction_viewer/.env
+/prediction_viewer/.env.*
+
 
 
 # Reserved folders for input data, output data and output binaries.
