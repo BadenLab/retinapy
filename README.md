@@ -18,7 +18,7 @@ Currently, The model is trained and tested on MEA recordings of chicken retina e
 
 Performance
 -----------
-The spike predictions for one cell are shown below, for about 5 seconds of test data:
+Spike prediction for one cell are shown below, for about 5 seconds of test data:
 
 https://user-images.githubusercontent.com/1439017/202433626-d06751e3-c619-472a-8491-19d28fbcfaaa.mp4
 
