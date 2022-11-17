@@ -22,10 +22,12 @@ Spike prediction for one cell are shown below, for about 5 seconds of test data:
 
 https://user-images.githubusercontent.com/1439017/202433626-d06751e3-c619-472a-8491-19d28fbcfaaa.mp4
 
-Below, for the same cell, predicted and ground truth spikes are counted in 100 ms bins. The data is for ~86 seconds of test data, without smoothing over time or averaging over multiple trials. (a line chart probably isn't so appropriate here, but it makes a visual comparison easier compared to just using points).
+Below, for the same cell, predicted and ground truth spikes are counted in 100 ms bins. The data is for ~86 seconds of test data, without smoothing over time or averaging over multiple trials. 
 
 
 ![infer100ms](https://user-images.githubusercontent.com/1439017/202437623-8f740415-1a62-4bad-a07b-8d99719c6574.png)
+
+(A line chart probably isn't so appropriate here, but it makes a visual comparison easier compared to just using points)
 
 Clustering
 ----------
