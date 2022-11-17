@@ -88,6 +88,8 @@ given cell.
 
 https://user-images.githubusercontent.com/1439017/182321360-0df3c046-d300-4c88-bfea-d07060d5679f.mp4
 
+The stimulus is 50-50 on-off 4-channel color noise. Each square shows the time pregression of the stimulus shown to the cell leading up to a spike. Our stimulator has 4 LEDs. In the visualization, the intensity of the 3 LEDs most similar to the red, green and blue sRGB primaries are mapped to the sRGB color values of the inner square, and and the intensity of the 4th LED (UV) is visualized as a purple boarder.
+
 
 
 
