@@ -26,6 +26,17 @@ The spike predictions for one cell are shown below, for about 5 seconds of test 
 
 https://user-images.githubusercontent.com/1439017/202433626-d06751e3-c619-472a-8491-19d28fbcfaaa.mp4
 
+Below, for the same cell, predicted and ground truth spikes are counted in 100 ms bins. The data is for ~86 seconds of test data, without smoothing over time or averaging over multiple trials. (a line chart probably isn't so appropriate here, but it makes a visual comparison easier compared to just using points).
+
+
+![infer100ms](https://user-images.githubusercontent.com/1439017/202437623-8f740415-1a62-4bad-a07b-8d99719c6574.png)
+
+Clustering
+----------
+The model is trained once for all cells. `(recording_id, cell_id)` tuples are encoded via a variational auto-encoder. The aim here is that in the future, an additional network can be used to place unknown cells into the embedding space so as to be able to do spike prediction for additional cells from new recordings. A consequence of this approach is that the encoding space can be inspected to see if any interesting clustering has emerged. Below is a screenshot of a t-SNE plot of the latent space. On inspection, the STA kernels for nearby points are similar.
+
+![latent](https://user-images.githubusercontent.com/1439017/202499239-ae0a0b44-f378-41fd-a35d-cb1743a7ff79.png)
+
 
 Neural network components
 =========================
@@ -42,9 +53,11 @@ Lightning.
 
 Basics
 ======
-The `retinapy.mea` module loads mea data and provides some useful functions
-such as downsampling and splitting data. Look no further if you just want to
-extract spike snippets for spike-triggered-averaging.
+If you aren't training deep learning models, you might still find some of the
+functionality in the `retinapy.mea` module useful. It handles loading MEA data 
+and provides some useful functions such as downsampling and data splitting. 
+Look no further if you just want to extract spike snippets for 
+spike-triggered-averaging.
 
 ```
 >>> import retinapy.mea as mea
@@ -68,8 +81,14 @@ Plotting
 Various plotting functions are collected in `vis.py`. Plotly is the main
 plotting library being used in this module.
 
+Spike snippet viewer
+====================
+For a bit of fun, there is a visualization tool in `/snippet_viewer` which
+inspects cells by viewing all of the snippets that contribute to the cell's
+STA kernel. Below is a video showing 500 ms leading up to every spike of a 
+given cell. 
 
-
+https://user-images.githubusercontent.com/1439017/182321360-0df3c046-d300-4c88-bfea-d07060d5679f.mp4
 
 
 
