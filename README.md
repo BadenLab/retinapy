@@ -1,4 +1,4 @@
-Python package used in the Baden Lab for handing data from retina recordings.
+The main purpose of this library is to create a predictive model for retinal ganglion cell activity: given stimulus and spike history, predict the next 100ms or so of spike activity. A secondary objective is to provide an efficient and easy to use API for interacting with data collected from multi-electrode array (MEA) data.
 
 Installation
 ============
@@ -8,13 +8,9 @@ Installation
 
 Spike prediction
 ================
-The main purpose of this library is to create a predictive model for 
-retinal ganglion cell activity: given stimulus and spike history, predict the 
-next 100ms or so of spike activity.
-
 `spikeprediction.py` and `models.py` define neural network models and 
 training objectives used for the prediction task. `dataset.py` turns the 
-mea data into Pytorch datasets for consumption by the training loop.
+mea data into PyTorch datasets for consumption by the training loop.
 
 Dataset
 -------
