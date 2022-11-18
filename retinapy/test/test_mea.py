@@ -105,6 +105,38 @@ def test_load_3brain_recordings():
     assert len(res) == 2
 
 
+def test_filter_clusters(rec0):
+    """
+    Tests that:
+        1. Filter by min count works for one example.
+        2. Filter by min rate works for one example.
+        3. Filter by max rate works for one example.
+    """
+    # Setup
+    num_clusters = len(rec0.cluster_ids)
+
+    # Test 1
+    expected_num_dropped = 32
+    num_filtered_clusters = len(
+        mea.filter_clusters(rec0, min_count=100).cluster_ids
+    )
+    assert (num_clusters - num_filtered_clusters) == expected_num_dropped
+
+    # Test 2
+    expected_num_dropped = 3
+    num_filtered_clusters = len(
+        mea.filter_clusters(rec0, min_rate=1/50).cluster_ids
+    )
+    assert (num_clusters - num_filtered_clusters) == expected_num_dropped
+
+    # Test 3
+    expected_num_dropped = 8
+    num_filtered_clusters = len(
+        mea.filter_clusters(rec0, max_rate=5.0).cluster_ids
+    )
+    assert (num_clusters - num_filtered_clusters) == expected_num_dropped
+
+
 def test_split(dc_rec12):
     """Tests splitting a recording into multiple parts.
 

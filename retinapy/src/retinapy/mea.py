@@ -271,6 +271,41 @@ class SpikeRecording:
         return snippets_by_cluster
 
 
+def filter_clusters(
+    recording: CompressedSpikeRecording,
+    min_rate: Optional[float] = None,
+    max_rate: Optional[float] = None,
+    min_count: Optional[int] = None,
+) -> CompressedSpikeRecording:
+    """Filter out clusters with spike rates outside the given range.
+
+    A new recording is returned.
+    """
+    matching_clusters = set()
+
+    def _spike_rate(spike_events):
+        assert len(spike_events.shape) == 1
+        res = len(spike_events) / recording.duration()
+        return res
+
+    for i in range(len(recording.spike_events)):
+        min_rate_match = (
+            min_rate is None
+            or _spike_rate(recording.spike_events[i]) >= min_rate
+        )
+        max_rate_match = (
+            max_rate is None
+            or _spike_rate(recording.spike_events[i]) <= max_rate
+        )
+        min_count_match = (
+            min_count is None or len(recording.spike_events[i]) >= min_count
+        )
+        is_match = min_rate_match and max_rate_match and min_count_match
+        if is_match:
+            matching_clusters.add(recording.cluster_ids[i])
+    return recording.clusters(matching_clusters)
+
+
 def split(recording: SpikeRecording, split_ratio: Sequence[int]):
     """Split a recording into multiple recordings.
 
