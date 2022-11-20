@@ -117,7 +117,7 @@ class CompressedSpikeRecording:
         """Duration of the recording in seconds."""
         return self.num_sensor_samples / self.sensor_sample_rate
 
-    def clusters(self, cluster_ids: Set[int]):
+    def clusters(self, cluster_ids: Set[int]) -> "CompressedSpikeRecording":
         """Returns a new recording with only the specified clusters."""
         if not cluster_ids.issubset(self.cluster_ids):
             raise ValueError(
@@ -136,6 +136,42 @@ class CompressedSpikeRecording:
             self.sensor_sample_rate,
             self.num_sensor_samples,
         )
+
+    def num_clusters(self) -> int:
+        return len(self.cluster_ids)
+
+    def filter_clusters(self,
+        min_rate: Optional[float] = None,
+        max_rate: Optional[float] = None,
+        min_count: Optional[int] = None,
+    ) -> "CompressedSpikeRecording":
+        """Filter out clusters with spike rates outside the given range.
+
+        A new recording is returned.
+        """
+        matching_clusters = set()
+
+        def _spike_rate(spike_events):
+            assert len(spike_events.shape) == 1
+            res = len(spike_events) / self.duration()
+            return res
+
+        for i in range(len(self.spike_events)):
+            min_rate_match = (
+                min_rate is None
+                or _spike_rate(self.spike_events[i]) >= min_rate
+            )
+            max_rate_match = (
+                max_rate is None
+                or _spike_rate(self.spike_events[i]) <= max_rate
+            )
+            min_count_match = (
+                min_count is None or len(self.spike_events[i]) >= min_count
+            )
+            is_match = min_rate_match and max_rate_match and min_count_match
+            if is_match:
+                matching_clusters.add(self.cluster_ids[i])
+        return self.clusters(matching_clusters)
 
 
 class SpikeRecording:
@@ -199,15 +235,18 @@ class SpikeRecording:
         assert len(self.stimulus) == len(self.spikes)
         return len(self.stimulus)
 
-    def duration(self):
+    def duration(self) -> float:
         return self.stimulus.shape[0] / self.sample_rate
 
-    def __getitem__(self, time_key):
+    def num_clusters(self) -> int:
+        return len(self.cluster_ids)
+
+    def __getitem__(self, key):
         """Return a new recording with only data for the given time bin."""
         return SpikeRecording(
-            f"{self.name}-{str(time_key)}",
-            self.stimulus[time_key],
-            self.spikes[time_key],
+            f"{self.name}-{str(key)}",
+            self.stimulus[key],
+            self.spikes[key],
             self.cluster_ids,
             self.sample_rate,
         )
@@ -224,7 +263,7 @@ class SpikeRecording:
             self.name,
             self.stimulus,
             self.spikes[:, cluster_indices],
-            cluster_ids,
+            list(cluster_ids),
             self.sample_rate,
         )
 
@@ -269,41 +308,6 @@ class SpikeRecording:
                 )
             )
         return snippets_by_cluster
-
-
-def filter_clusters(
-    recording: CompressedSpikeRecording,
-    min_rate: Optional[float] = None,
-    max_rate: Optional[float] = None,
-    min_count: Optional[int] = None,
-) -> CompressedSpikeRecording:
-    """Filter out clusters with spike rates outside the given range.
-
-    A new recording is returned.
-    """
-    matching_clusters = set()
-
-    def _spike_rate(spike_events):
-        assert len(spike_events.shape) == 1
-        res = len(spike_events) / recording.duration()
-        return res
-
-    for i in range(len(recording.spike_events)):
-        min_rate_match = (
-            min_rate is None
-            or _spike_rate(recording.spike_events[i]) >= min_rate
-        )
-        max_rate_match = (
-            max_rate is None
-            or _spike_rate(recording.spike_events[i]) <= max_rate
-        )
-        min_count_match = (
-            min_count is None or len(recording.spike_events[i]) >= min_count
-        )
-        is_match = min_rate_match and max_rate_match and min_count_match
-        if is_match:
-            matching_clusters.add(recording.cluster_ids[i])
-    return recording.clusters(matching_clusters)
 
 
 def split(recording: SpikeRecording, split_ratio: Sequence[int]):
@@ -380,6 +384,22 @@ def mirror_split(recording: SpikeRecording, split_ratio: Sequence[int]):
         recording
     ), f"Split lengths do not match ({total_len}) vs ({len(recording)})."
     return splits
+
+
+def remove_few_spike_clusters(splits, min_counts):
+    """Skip clusters that have few spikes in one of the data splits."""
+    if len(splits) != len(min_counts):
+        raise ValueError("The number of splits and minimum counts must be "
+                         f"the same. Got ({len(splits)}, {min_counts}).")
+    to_keep = np.ones(shape=len(splits[0].cluster_ids), dtype=bool)
+    for s, min_count in zip(splits, min_counts):
+        np.logical_and(
+                np.sum(s.spikes, axis=0) > min_count,
+                to_keep,
+                to_keep)
+    filtered_splits = [s.clusters(
+        set(np.array(s.cluster_ids)[to_keep])) for s in splits]
+    return filtered_splits
 
 
 def load_stimulus_pattern(file_path: Union[pathlib.Path, str]) -> np.ndarray:

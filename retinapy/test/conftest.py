@@ -27,6 +27,18 @@ def rec0():
 
 
 @pytest.fixture
+def rec1():
+    exp = mea.single_3brain_recording("Chicken_04_08_21_Phase_02", DATA_DIR)
+    return exp
+
+
+@pytest.fixture
+def rec2():
+    exp = mea.single_3brain_recording("Chicken_05_08_21_Phase_01", DATA_DIR)
+    return exp
+
+
+@pytest.fixture
 def rec12():
     exp = mea.single_3brain_recording("Chicken_17_08_21_Phase_00", DATA_DIR)
     return exp

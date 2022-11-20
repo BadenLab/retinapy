@@ -437,3 +437,12 @@ class ConcatDistFieldDataset(LabeledConcatDataset):
     def stride(self):
         return self.datasets[0].stride
 
+    @property
+    def num_recordings(self):
+        return len(self.datasets)
+
+    @property
+    def num_clusters(self):
+        res = sum(d.recording.num_clusters() for d in self.datasets)
+        return res
+

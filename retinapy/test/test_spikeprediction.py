@@ -21,6 +21,44 @@ def recs():
     return res
 
 
+def test_create_multi_cluster_df_datasets(rec0, rec1, rec2):
+    # Setup
+    # Note down the expected number of clusters. These were calculated once
+    # in a Jupyter notebook. It's not a very good ground truth, as it was using
+    # the function in question; however, it does work as a check against any
+    # unexpected changes.
+    #
+    # Filtered clusters:
+    #  - 24 filtered from rec2 for having too few spikes.
+    #  - 66 filtered from rec1 for having too few spikes.
+    #  - 17 filtered from rec0 for having too few spikes.
+    #  - 3 filtered from rec2 for being > 19 Hz.
+    # Total: 110
+    expected_num_filtered = 110
+    expected_num_clusters = (
+        rec0.num_clusters()
+        + rec1.num_clusters()
+        + rec2.num_clusters()
+        - expected_num_filtered
+    )
+
+    # Test
+    train_ds, val_ds, test_ds = sp.create_multi_cluster_df_datasets(
+        [rec0, rec1, rec2],
+        input_len=992,
+        output_len=100,
+        downsample=18,
+        stride=17,
+        num_workers=5,
+    )
+    assert (
+        expected_num_clusters
+        == train_ds.num_clusters
+        == val_ds.num_clusters
+        == test_ds.num_clusters
+    )
+
+
 def test_trainable_factories(recs):
     """
     Tests multiple functions in one go (so as to speed up tests).

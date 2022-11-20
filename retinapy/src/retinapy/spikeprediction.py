@@ -21,6 +21,7 @@ import torch
 import plotly.io
 import torchinfo
 import einops
+import numpy as np
 
 
 DEFAULT_OUT_BASE_DIR = "./out/"
@@ -36,6 +37,9 @@ IN_CHANNELS = 4 + 1
 LOSS_CALC_PAD_MS = 600
 DIST_CLAMP_MS = 600
 SPLIT_RATIO = (7, 2, 1)
+MIN_SPIKES = (10, 3, 3)
+# Anything above 19 Hz is just a channel following the 20 Hz trigger.
+MAX_SPIKE_RATE = 19  # Hz
 
 _logger = logging.getLogger(__name__)
 
@@ -867,6 +871,16 @@ def create_multi_cluster_df_datasets(
     train_ds = []
     val_ds = []
     test_ds = []
+    # Remove clusters with too few or too many spikes.
+    # You may notice that we filter out low-count clusters again a little
+    # later, after the splits are formed. So we don't need to filter low-count
+    # clusters here, but doing so saves downsampling channels for which we
+    # can easily check that we won't be needing.
+    recordings = (
+        r.filter_clusters(max_rate=MAX_SPIKE_RATE, min_count=min(MIN_SPIKES))
+        for r in recordings
+    )
+
     # Make a queue to save memory by deleting while iterating.
     dc_recs_queue = mea.decompress_recordings(
         recordings, downsample=downsample, num_workers=num_workers
@@ -874,6 +888,9 @@ def create_multi_cluster_df_datasets(
     while dc_recs_queue:
         rec = dc_recs_queue.popleft()
         train_val_test_splits = mea.mirror_split(rec, split_ratio=SPLIT_RATIO)
+        train_val_test_splits = mea.remove_few_spike_clusters(
+            train_val_test_splits, MIN_SPIKES
+        )
         snippet_len = input_len + output_len
         train_val_test_datasets = [
             retinapy.dataset.DistFieldDataset(
@@ -888,9 +905,6 @@ def create_multi_cluster_df_datasets(
                 allow_cheating=False,
             )
             for (r, use_augmentation) in zip(
-                # train_val_test_splits, [True, False, False]
-                # For the moment, while the validation just takes a small
-                # portion of the validation set.
                 train_val_test_splits,
                 [True, True, False],
             )
@@ -911,8 +925,15 @@ def create_distfield_datasets(
     output_len: int,
     downsample: int,
 ):
+    # Remove clusters with too few or too many spikes.
+    recording = recording.filter_clusters(
+        max_rate=MAX_SPIKE_RATE, min_count=min(MIN_SPIKES)
+    )
     rec = mea.decompress_recording(recording, downsample=downsample)
     train_val_test_splits = mea.mirror_split(rec, split_ratio=SPLIT_RATIO)
+    train_val_test_splits = mea.remove_few_spike_clusters(
+        train_val_test_splits, MIN_SPIKES
+    )
     snippet_len = input_len + output_len
     train_val_test_datasets = [
         retinapy.dataset.DistFieldDataset(

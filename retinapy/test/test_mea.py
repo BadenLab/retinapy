@@ -118,21 +118,21 @@ def test_filter_clusters(rec0):
     # Test 1
     expected_num_dropped = 32
     num_filtered_clusters = len(
-        mea.filter_clusters(rec0, min_count=100).cluster_ids
+        rec0.filter_clusters(min_count=100).cluster_ids
     )
     assert (num_clusters - num_filtered_clusters) == expected_num_dropped
 
     # Test 2
     expected_num_dropped = 3
     num_filtered_clusters = len(
-        mea.filter_clusters(rec0, min_rate=1/50).cluster_ids
+        rec0.filter_clusters(min_rate=1 / 50).cluster_ids
     )
     assert (num_clusters - num_filtered_clusters) == expected_num_dropped
 
     # Test 3
     expected_num_dropped = 8
     num_filtered_clusters = len(
-        mea.filter_clusters(rec0, max_rate=5.0).cluster_ids
+        rec0.filter_clusters(max_rate=5.0).cluster_ids
     )
     assert (num_clusters - num_filtered_clusters) == expected_num_dropped
 
@@ -262,6 +262,26 @@ def test_mirror_split2(dc_rec12):
         splits = mea.mirror_split(dc_rec12, ratios[i].tolist())
         check_sizes(ratios[i], splits)
         check_split1_values(ratios[i], splits)
+
+
+def test_remove_few_spike_clusters(dc_rec12):
+    """
+    Tests removing clusters with few spikes.
+
+    Tests that: for a single set of arguments, the filtering works and matches 
+    a precomputed result.
+    """
+    # Setup
+    splits = (7, 2, 1)
+    min_counts = (10, 5, 5)
+    num_clusters = len(dc_rec12.cluster_ids)
+    expected_num_removed = 32
+    train_test_val_splits = mea.split(dc_rec12, splits)
+
+    # Test
+    filtered = mea.remove_few_spike_clusters(train_test_val_splits, min_counts)
+    num_filtered_clusters = [rec.num_clusters() for rec in filtered]
+    assert num_filtered_clusters == [num_clusters - expected_num_removed] * 3
 
 
 def test_decompress_recording(rec12):
