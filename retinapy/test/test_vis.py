@@ -3,7 +3,7 @@ import retinapy.mea as mea
 import retinapy.vis as vis
 
 
-def test_KernelPlots(five_dc_recs, tmp_path):
+def test_KernelPlots(four_dc_recs, tmp_path):
     """Tests KernelPlots class.
 
     Tests that:
@@ -16,14 +16,14 @@ def test_KernelPlots(five_dc_recs, tmp_path):
     # Test
     # 1. Generate plots.
     kernel_plots = vis.KernelPlots.generate(
-            five_dc_recs,
+            four_dc_recs,
             snippet_len=500,
             snippet_pad=50,
             out_dir=out_dir,
             mini=True,
             num_workers=100)
     # 2. Load all expected plots.
-    for rec in five_dc_recs:
+    for rec in four_dc_recs:
         for cluster_id in rec.cluster_ids:
             plot_img = kernel_plots.get(rec.name, cluster_id)
             assert plot_img is not None

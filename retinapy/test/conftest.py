@@ -59,26 +59,26 @@ def dc_rec12(rec12):
 
 
 @pytest.fixture
-def five_recs():
-    """Load 5 recordings.
+def four_recs():
+    """Load 4 recordings.
 
-    5 is just a small number for testing.
+    4 is just a small number for testing.
     """
     return mea.load_3brain_recordings(
         DATA_DIR,
         include=[
             "Chicken_04_08_21_Phase_01",
-            "Chicken_04_08_21_Phase_02",
             "Chicken_05_08_21_Phase_00",
             "Chicken_05_08_21_Phase_01",
             "Chicken_06_08_21_2nd_Phase_00",
         ],
-        num_workers=5,
+        num_workers=4,
     )
 
+
 @pytest.fixture
-def five_dc_recs(five_recs):
-    """Load 5 decompressed recordings."""
-    dc_recs = mea.decompress_recordings(five_recs, downsample=18, 
-                                        num_workers=5)
+def four_dc_recs(four_recs):
+    """Load 4 decompressed recordings."""
+    dc_recs = mea.decompress_recordings(four_recs, downsample=18, 
+                                        num_workers=4)
     return dc_recs
