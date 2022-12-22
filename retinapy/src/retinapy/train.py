@@ -182,8 +182,9 @@ class Trainable:
         return f"Trainable ({self.label})"
 
 
-def _create_dataloaders(train_ds, val_ds, test_ds, batch_size, 
-                        num_workers, pin_memory):
+def _create_dataloaders(
+    train_ds, val_ds, test_ds, batch_size, num_workers, pin_memory
+):
     # Setting pin_memory=True. This is generally recommended when training on
     # Nvidia GPUs. See:
     #   - https://discuss.pytorch.org/t/when-to-set-pin-memory-to-true/19723
@@ -250,6 +251,28 @@ class TrainingTimers:
         return timer
 
 
+class EarlyStopping:
+    def __init__(self, min_epochs, patience):
+        self.patience = patience
+        self.min_epochs = min_epochs
+        self.best_loss = None
+        self.best_epoch = 0
+        self.cur_epoch = 0
+
+    def update(self, loss):
+        if self.best_loss is None or loss < self.best_loss:
+            self.best_loss = loss
+            self.best_epoch = self.cur_epoch
+            do_early_stop = False
+        else:
+            is_warmup = self.cur_epoch < self.min_epochs
+            is_within_patience = (
+                self.cur_epoch - self.best_epoch <= self.patience
+            )
+            do_early_stop = not (is_warmup or is_within_patience)
+        return do_early_stop
+
+
 def train(
     trainable: Trainable,
     num_epochs: int,
@@ -259,7 +282,8 @@ def train(
     out_dir: Union[str, pathlib.Path],
     steps_til_log: int = 1000,
     steps_til_eval: Optional[int] = None,
-    evals_til_eval_test_ds: Optional[int] = None,
+    evals_til_eval_train_ds: Optional[int] = None,
+    early_stopping: Optional[EarlyStopping] = None,
     initial_checkpoint: Optional[Union[str, pathlib.Path]] = None,
     num_workers: int = 4,
     pin_memory: bool = False,
@@ -287,7 +311,6 @@ def train(
     tensorboard_dir = pathlib.Path(out_dir) / "tensorboard"
     tb_logger = retinapy._logging.TbLogger(tensorboard_dir)
 
-
     # Load the model & loss fn.
     # The order here is important when resuming from checkpoints. We must:
     # 1. Create model.
@@ -298,7 +321,7 @@ def train(
     # The reason the order is crucial is that the optimizer must be on the gpu
     # before having it's parameters populated, as there is no optimizer.gpu()
     # method (possibly coming: https://github.com/pytorch/pytorch/issues/41839).
-    # An alternative would be to use the map_location argument. See the 
+    # An alternative would be to use the map_location argument. See the
     # discussion: https://github.com/pytorch/pytorch/issues/2830.
     model = trainable.model
     model.cuda()
@@ -306,8 +329,9 @@ def train(
         model.parameters(), lr=lr, weight_decay=weight_decay
     )
     if initial_checkpoint is not None:
-        retinapy.models.load_model_and_optimizer(model, optimizer, 
-                                                 initial_checkpoint)
+        retinapy.models.load_model_and_optimizer(
+            model, optimizer, initial_checkpoint
+        )
 
     # Load the data.
     train_dl, val_dl, test_dl = _create_dataloaders(
@@ -333,7 +357,7 @@ def train(
             summary = trainable.model_summary(next(iter(train_dl)))
         except Exception as e:
             msg = (
-                "Failed to generating model summary. Exception raised:\n"
+                "Failed to generate model summary. Exception raised:\n"
                 f"{str(e)}"
             )
             _logger.error(msg)
@@ -343,11 +367,11 @@ def train(
     model_saver = retinapy._logging.ModelSaver(out_dir, model, optimizer)
     metric_tracker = retinapy._logging.MetricTracker(out_dir)
 
-    def _eval():
-        nonlocal num_evals
-        if num_evals == evals_til_eval_test_ds:
-            dl = test_dl
-            label = "test-ds"
+
+    def _eval(use_train_ds: bool = False):
+        if use_train_ds:
+            dl = train_dl
+            label = "train-ds"
         else:
             dl = val_dl
             label = "val-ds"
@@ -358,16 +382,17 @@ def train(
             if "metrics" not in eval_results:
                 raise ValueError("Trainable.evaluate() must return metrics.")
             metrics = eval_results["metrics"]
+            assert (
+                metrics[0].name == "loss"
+            ), "Currently, by convention, the first metric must be loss."
             retinapy._logging.print_metrics(metrics)
         tb_logger.log_scalar(
             step, "eval-time", timers.validation.elapsed(), label
         )
-        num_evals += 1
         _logger.info(
             f"Finished evaluation in {round(timers.validation.elapsed())} sec "
             f"(rolling ave: {round(timers.validation.rolling_duration())} sec)"
         )
-        num_evals += 1
         return metrics
 
     _logger.info("Starting training loop.")
@@ -426,6 +451,9 @@ def train(
                 is_near_epoch_end = batch_step + steps_til_eval >= len(train_dl)
                 if not is_near_epoch_end:
                     _eval()
+                    num_evals += 1
+                    if evals_til_eval_train_ds  and num_evals % evals_til_eval_train_ds == 0:
+                        _eval(use_train_ds=True)
             step += 1
 
             # Recovery.
@@ -441,11 +469,23 @@ def train(
         )
         # Evaluate and save at end of epoch.
         metrics = _eval()
+        num_evals += 1
+        if evals_til_eval_train_ds  and num_evals % evals_til_eval_train_ds == 0:
+            _eval(use_train_ds=True)
+
         # If this on_metric_end type of behaviour grows, consider switching
         # to callbacks.
         improved_metrics = metric_tracker.on_epoch_end(metrics, epoch)
         model_saver.save_checkpoint(epoch, improved_metrics)
         timers.recovery.restart()
+        if early_stopping:
+            should_stop = early_stopping.update(metrics[0])
+            if should_stop:
+                _logger.info(
+                    "Early stopping triggered (patience: "
+                    f"{early_stopping.patience} epochs)."
+                )
+                break
     _logger.info(
         f"Finished training. {round(timers.epoch.total_elapsed())} "
         "secs elsapsed."
