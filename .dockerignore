@@ -6,4 +6,6 @@ data
 out
 notebooks
 .pytest_cache
-web/public/
+.idea
+prediction_viewer
+snippet_viewer
