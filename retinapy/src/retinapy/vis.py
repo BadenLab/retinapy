@@ -11,6 +11,7 @@ import retinapy.mea as mea
 import retinapy.spikeprediction as sp
 import torch
 import sklearn.manifold
+import scipy
 from typing import Union, Iterable
 import pathlib
 import PIL.Image
@@ -28,7 +29,7 @@ images created here can be recorded automatically when training a model.
 _logger = logging.getLogger(__name__)
 
 
-def create_title(title: str, subtitle: Optional[str]) -> str:
+def create_title(title: str, subtitle: Optional[str] = None) -> str:
     """
     Returns a styled title string for use in plotly.
 
@@ -71,8 +72,6 @@ def kernel(
     t_0: int,
     bin_duration_ms,
     vline: Optional[int] = None,
-    title=None,
-    subtitle=None,
 ):
     """
     Args:
@@ -114,7 +113,7 @@ def kernel(
         margin=dict(l=1, r=1, b=1, t=25, pad=10),
         yaxis_fixedrange=True,
         showlegend=False,
-        title="Kernel",
+        title={"text": "Kernel"},
         xaxis={"title": "time (ms), with spike at 0"},
         yaxis={"title": "Stimulus", "range": [0, 1]},
     )
@@ -180,7 +179,7 @@ class KernelPlots:
                             f'<span style="font-size:75%">{ds_rec.name}</span><br>'
                             f'<span style="font-size:95%">c{c_id}</span> '
                             '<span style="font-size:85%">'
-                            f'({scinot.format(num_spikes, 2)} spikes</span>)' 
+                            f"({scinot.format(num_spikes, 2)} spikes</span>)"
                         ),
                     },
                     "width": 200,
@@ -229,7 +228,7 @@ class KernelPlots:
         out_dir = pathlib.Path(out_dir) / cls.OUT_DIR
         exists_and_not_empty = out_dir.is_dir() and len(list(out_dir.iterdir()))
         if exists_and_not_empty:
-            raise ValueError(
+            _logger.warning(
                 f"out_dir already exists and has contents ({out_dir})"
             )
         out_dir.mkdir(parents=False, exist_ok=True)
@@ -482,7 +481,7 @@ def distfield_model_in_out(
         cols=1,
         shared_xaxes=True,
         vertical_spacing=0.02,
-        #row_width=[0.15, 0.15, 0.15, 0.15, 0.15, 0.45],
+        # row_width=[0.15, 0.15, 0.15, 0.15, 0.15, 0.45],
         x_title=create_axis_title("time", "ms"),
     )
 
@@ -499,13 +498,18 @@ def distfield_model_in_out(
                 name=f"{stim.wavelength} nm",
                 mode="lines",
             ),
-            row=idx+1,
+            row=idx + 1,
             col=1,
         )
         fig.update_yaxes(
-            {"tickmode": "array", "tickvals": [-1, 0, 1], "fixedrange": True,
-            "title_text": ['R', 'G', 'B', 'UV'][idx], "title_standoff": 0 },
-            row=idx+1,
+            {
+                "tickmode": "array",
+                "tickvals": [-1, 0, 1],
+                "fixedrange": True,
+                "title_text": ["R", "G", "B", "UV"][idx],
+                "title_standoff": 0,
+            },
+            row=idx + 1,
             col=1,
         )
     if pos_enc is not None:
@@ -534,8 +538,12 @@ def distfield_model_in_out(
         col=1,
     )
     fig.update_yaxes(
-        {"tickmode": "array", "tickvals": [-5, 0, 5], "fixedrange": True,
-        "range": [-6, 6]},
+        {
+            "tickmode": "array",
+            "tickvals": [-5, 0, 5],
+            "fixedrange": True,
+            "range": [-6, 6],
+        },
         row=5,
         col=1,
     )
@@ -616,22 +624,33 @@ def distfield_model_in_out(
         main_title_str += f" ({cluster_label})"
     title = create_title(
         main_title_str,
-        "Output region is highlight blue. Spikes are red dashed lines.",
+        "Prediction region is light-blue. Dashed lines represent spikes.",
     )
     fig.update_layout(
         {
             "title": {"text": title},
             "height": 600,
-            "margin": {"t": 70, "l": 100},
+            "margin": {"t": 70, "l": 100, "r": 100},
         }
     )
-    fig.add_annotation(text=create_axis_title("RGB-UV stimulus (normalized)", "no units"),
-                  xref="paper", yref="paper", #font_color="grey",
-                  x=-0.1, y=0.8, textangle=-90, showarrow=False)
-    fig.add_annotation(text="<span style=''>spike distance<br>(log, normalized)<br>"
-                       "<span style='font-size:90%;whitespace:pre;color:grey'>log(ms)</span>",
-                  xref="paper", yref="paper", #font_color="grey",
-                  x=1.15, y=0.0, showarrow=False)
+    fig.add_annotation(
+        text=create_axis_title("RGB-UV stimulus (normalized)", "no units"),
+        xref="paper",
+        yref="paper",  # font_color="grey",
+        x=-0.1,
+        y=0.8,
+        textangle=-90,
+        showarrow=False,
+    )
+    fig.add_annotation(
+        text="<span style=''>spike distance<br>(log, normalized)<br>"
+        "<span style='font-size:90%;whitespace:pre;color:grey'>log(ms)</span>",
+        xref="paper",
+        yref="paper",  # font_color="grey",
+        x=1.15,
+        y=0.0,
+        showarrow=False,
+    )
     return fig
 
 
@@ -682,7 +701,8 @@ def latent_tsne_fig(
     fig.update_layout(
         {
             "title": {
-                "text": f"Latent space, (t-SNE reduction from {zs.shape[1]} dimensions)"
+                "text": f"Latent space, (t-SNE reduction from {zs.shape[1]} "
+                "dimensions)"
             },
         }
     )
@@ -690,8 +710,8 @@ def latent_tsne_fig(
 
 
 def latent2d_fig(
-    rec_ids: np.ndarray,
-    cluster_ids: np.ndarray,
+    rec_names: Iterable[str],
+    cluster_ids: Iterable[int],
     z_xs: np.ndarray,
     z_ys: np.ndarray,
     use_label=False,
@@ -701,7 +721,7 @@ def latent2d_fig(
     # quite a proactive plotting function.
     fig = go.Figure()
     labels = [
-        f"({r_idx}, {c_id})" for (r_idx, c_id) in zip(rec_ids, cluster_ids)
+        f"({r_name}, {c_id})" for (r_name, c_id) in zip(rec_names, cluster_ids)
     ]
     mode = "markers+text" if use_label else "markers"
     scatter = go.Scatter(
@@ -720,3 +740,185 @@ def latent2d_fig(
         }
     )
     return fig
+
+
+def spike_sequence_as_bars(actual, pred, bin_ms: float):
+    """A figure showing actual vs. predicted spike counts."""
+    if len(actual) != len(pred):
+        raise ValueError(
+            "actual and pred must be the same length. Got"
+            f"(actual: {len(actual)}, pred: {len(pred)})."
+        )
+    actual = actual.astype(np.float32)
+    pred = pred.astype(np.float32)
+    num_bins = len(actual)
+    bins_per_row = 60
+    num_rows = max(1, num_bins // bins_per_row)
+    fig = plotly.subplots.make_subplots(
+        rows=num_rows,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.01,
+        x_title=f"time bins ({bin_ms:.1f} ms)",
+        y_title="spike count",
+    )
+    bar_width = 40
+    bar_gap = 0.3
+    center_bar_width = 0.7 * bar_width
+    center_bar_offset = 0.5 * (
+        bar_gap * bar_width + bar_width - center_bar_width
+    )
+    for i in range(num_rows):
+        xs = np.arange(bins_per_row) * bin_ms
+        start, end = np.array([i, i + 1]) * bins_per_row
+        min_vals = np.minimum(actual[start:end], pred[start:end])
+        err = pred[start:end] - actual[start:end]
+        bar_actual = go.Bar(
+            x=xs,
+            y=actual[start:end],
+            name="base",
+            marker={
+                "color": "rgba(140, 140, 140, 1)",
+                "line": {"width": 0.6, "color": "rgb(10,10,10)"},
+            },
+            legendgroup="actual",
+            showlegend=i == 0,
+            width=bar_width,
+            offset=0,
+            # width=0.9
+        )
+        bar_pred = go.Bar(
+            x=xs,
+            y=pred[start:end],
+            name="pred",
+            # marker={"color": "rgb(220, 100, 80)", "line": {"width": 1}},
+            marker={
+                "color": "rgba(250, 170, 170, 1)",
+                "line": {"width": 0.8, "color": "rgb(25,17,17)"},
+            },
+            # width=1,
+            legendgroup="pred",
+            showlegend=i == 0,
+            width=center_bar_width,
+            offset=center_bar_offset,
+        )
+        fig.add_trace(bar_actual, row=i + 1, col=1)
+        fig.add_trace(bar_pred, row=i + 1, col=1)
+
+    fig.update_layout(default_fig_layout())
+    fig.update_layout(
+        # barmode="stack",
+        bargap=bar_gap,
+        barmode="overlay",
+    )
+    fig.update_layout(
+        {
+            "title": {
+                "text": create_title(
+                    "Actual spikes (red) vs. predicted spikes (blue) in "
+                    f"{bin_ms:.1f} ms bins"
+                )
+            },
+            "height": max(200, 75 * num_rows),
+        }
+    )
+    return fig
+
+
+def spike_sequence_as_lines(
+    actual, pred, bin_ms: float, smooth: Optional[int] = None
+):
+    """A figure showing actual vs. predicted spike counts."""
+    if len(actual) != len(pred):
+        raise ValueError(
+            "actual and pred must be the same length. Got"
+            f"(actual: {len(actual)}, pred: {len(pred)})."
+        )
+    actual = actual.astype(np.float32)
+    pred = pred.astype(np.float32)
+    num_bins = len(actual)
+    bins_per_row = 100
+    num_rows = max(1, num_bins // bins_per_row)
+    fig = plotly.subplots.make_subplots(
+        rows=num_rows,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.01,
+        x_title=f"time bins ({bin_ms:.1f} ms)",
+        y_title="spike count",
+    )
+    for i in range(num_rows):
+        xs = np.arange(bins_per_row) * bin_ms
+        start, end = np.array([i, i + 1]) * bins_per_row
+        dots_actual = go.Scatter(
+            x=xs,
+            y=actual[start:end],
+            name="actual",
+            line_color="rgb(10, 10, 10)",
+            mode="markers",
+            marker_size=4,
+            legendgroup="actual",
+            showlegend=i == 0,
+        )
+        dots_pred = go.Scatter(
+            x=xs,
+            y=pred[start:end],
+            name="pred",
+            line_color="rgb(250, 170, 170)",
+            mode="markers",
+            marker_size=4,
+            legendgroup="pred",
+            showlegend=i == 0,
+        )
+        # smooth_fn = scipy.ndimage.uniform_filter1d
+        identity = lambda x, sigma, mode: x
+        if smooth:
+            smooth_fn = scipy.ndimage.gaussian_filter1d
+        else:
+            smooth_fn = identity
+
+        smooth_actual = go.Scatter(
+            x=xs,
+            y=smooth_fn(actual[start:end], smooth, mode="reflect"),
+            name="actual (window smooth)",
+            mode=None,
+            legendgroup="actual",
+            showlegend=i == 0,
+            fill=None,
+            # fillcolor="rgb(255, 200, 200)")
+            line={"color": "rgb(50, 50, 50)", "width": 2},
+        )
+        smooth_pred = go.Scatter(
+            x=xs,
+            y=smooth_fn(pred[start:end], smooth, mode="reflect"),
+            name="pred (window smooth)",
+            mode=None,  # no line
+            legendgroup="pred",
+            showlegend=i == 0,
+            # fill="tozeroy",
+            fill="tonexty",
+            line_color="rgb(250, 170, 170)",
+            fillcolor="rgb(170, 50, 50)",
+            # fillcolor="rgba(0, 154, 255, 0.2)"
+        )
+        fig.add_trace(smooth_actual, row=i + 1, col=1)
+        fig.add_trace(smooth_pred, row=i + 1, col=1)
+        if smooth is None:
+            fig.add_trace(dots_actual, row=i + 1, col=1)
+            fig.add_trace(dots_pred, row=i + 1, col=1)
+
+    fig.update_layout(default_fig_layout())
+    fig.update_layout(
+        {
+            "title": {
+                "text": create_title(
+                    "Actual spikes (red) vs. predicted spikes (blue) in "
+                    f"{bin_ms:.1f} ms bins"
+                )
+            },
+            "height": max(200, 75 * num_rows),
+        }
+    )
+    return fig
+
+
