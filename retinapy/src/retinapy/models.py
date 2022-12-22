@@ -32,8 +32,10 @@ def load_model(
     model_state = checkpoint_state["model"]
     model.load_state_dict(model_state)
 
+
 def load_model_and_optimizer(
-    model, optimizer, checkpoint_path: Union[str, pathlib.Path]):
+    model, optimizer, checkpoint_path: Union[str, pathlib.Path]
+):
     checkpoint_path = pathlib.Path(checkpoint_path)
     if not checkpoint_path.exists():
         raise FileNotFoundError(
@@ -214,9 +216,7 @@ class MultiClusterModel2(nn.Module):
     LED_CHANNELS = 4
     NUM_CLUSTERS = 1
 
-    def __init__(
-        self, in_len, out_len, num_downsample, num_recordings, num_clusters
-    ):
+    def __init__(self, in_len, out_len, num_downsample, num_clusters):
         super().__init__()
         self.in_len = in_len
         self.out_len = out_len
@@ -238,7 +238,7 @@ class MultiClusterModel2(nn.Module):
         # VAE
         self.z_dim = 2
         self.num_clusters = num_clusters
-        self.num_embed = num_recordings * num_clusters
+        self.num_embed = num_clusters
         self.n_h1 = 20
         self.n_h2 = 20
         # HyperResnet
@@ -313,23 +313,23 @@ class MultiClusterModel2(nn.Module):
             out_features=self.out_len,
         )
         # VAE
-        self.vae = MiniVAE(num_recordings * num_clusters, z_n=self.z_dim)
+        self.vae = MiniVAE(num_clusters, z_n=self.z_dim)
         # VAE decode to attention query
         # 1 query per mid channel.
         self.query_decoder = QueryDecoder(
             self.z_dim, total_num_channels, self.key_len
         )
 
-    def encode_vae(self, rec_id, cluster_id):
-        id_ = rec_id * self.num_clusters + cluster_id
+    def encode_vae(self, cluster_id):
+        id_ = cluster_id
         z, z_mu, z_logvar = self.vae(id_)
         return z, z_mu, z_logvar
 
-    def forward(self, snippet, rec_id, cluster_id):
+    def forward(self, snippet, cluster_id):
         # Layer 0
         x = self.layer0(snippet)
         # VAE
-        z, z_mu, z_logvar = self.encode_vae(rec_id, cluster_id)
+        z, z_mu, z_logvar = self.encode_vae(cluster_id)
         # Queries
         queries = self.query_decoder(z)
         weights_W, weights_b = self.warehouse(queries)
@@ -351,7 +351,6 @@ class CatMultiClusterModel(nn.Module):
         in_len,
         out_len,
         num_downsample,
-        num_recordings,
         num_clusters,
         z_dim=2,
     ):
@@ -374,7 +373,6 @@ class CatMultiClusterModel(nn.Module):
         mid_kernel_size = 7
         # VAE
         self.z_dim = z_dim
-        self.num_recordings = num_recordings
         self.num_clusters = num_clusters
         self.n_vae_out = 30
 
@@ -443,12 +441,10 @@ class CatMultiClusterModel(nn.Module):
             out_features=self.out_len,
         )
         # VAE
-        self.vae = VAE(
-            num_recordings * num_clusters, z_n=self.z_dim, out_n=self.n_vae_out
-        )
+        self.vae = VAE(num_clusters, z_n=self.z_dim, out_n=self.n_vae_out)
 
-    def encode_vae(self, rec_id, cluster_id):
-        id_ = rec_id * self.num_clusters + cluster_id
+    def encode_vae(self, cluster_id):
+        id_ = cluster_id
         z_decode, z_mu, z_logvar = self.vae(id_)
         return z_decode, z_mu, z_logvar
 
@@ -473,11 +469,11 @@ class CatMultiClusterModel(nn.Module):
         x = torch.cat([x, z], dim=1)
         return x
 
-    def forward(self, snippet, rec_id, cluster_id):
+    def forward(self, snippet, cluster_id):
         # VAE
         x = self.cat_mean(snippet)
         x = self.layer0(x)
-        z_decode, z_mu, z_logvar = self.encode_vae(rec_id, cluster_id)
+        z_decode, z_mu, z_logvar = self.encode_vae(cluster_id)
         x = self.cat_z(x, z_decode)
         x = self.layer1(x)
         x = self.layer2(x)
@@ -495,7 +491,6 @@ class MultiClusterModel(nn.Module):
         in_len,
         out_len,
         num_downsample,
-        num_recordings,
         num_clusters,
         z_dim=2,
     ):
@@ -520,7 +515,6 @@ class MultiClusterModel(nn.Module):
         mid_kernel_size = 7
         # VAE
         self.z_dim = z_dim
-        self.num_recordings = num_recordings
         self.num_clusters = num_clusters
         # HyperResnet
         warehouse_factor = 8
@@ -615,10 +609,10 @@ class MultiClusterModel(nn.Module):
             out_features=self.out_len,
         )
         # VAE
-        self.vae = MiniVAE(num_recordings * num_clusters, z_n=self.z_dim)
+        self.vae = MiniVAE(num_clusters, z_n=self.z_dim)
 
-    def encode_vae(self, rec_id, cluster_id):
-        id_ = rec_id * self.num_clusters + cluster_id
+    def encode_vae(self, cluster_id):
+        id_ = self.num_clusters + cluster_id
         z, z_mu, z_logvar = self.vae(id_)
         return z, z_mu, z_logvar
 
@@ -638,11 +632,11 @@ class MultiClusterModel(nn.Module):
         x = torch.cat([snippet, m], dim=1)
         return x
 
-    def forward(self, snippet, rec_id, cluster_id):
+    def forward(self, snippet, cluster_id):
         x = self.cat_mean(snippet)
         x = self.layer0(x)
         # VAE
-        z, z_mu, z_logvar = self.encode_vae(rec_id, cluster_id)
+        z, z_mu, z_logvar = self.encode_vae(cluster_id)
         # Hyper
         for l in self.layer1:
             x = l(x, z)
@@ -656,11 +650,18 @@ class MultiClusterModel(nn.Module):
 
 class ClusteringTransformer(nn.Module):
     def __init__(
-        self, in_len, out_len, stim_downsample, num_recordings, num_clusters,
-        z_dim=2, num_heads=8, head_dim=64, num_tlayers=6):
+        self,
+        in_len,
+        out_len,
+        stim_downsample,
+        num_clusters,
+        z_dim=2,
+        num_heads=8,
+        head_dim=64,
+        num_tlayers=6,
+    ):
         super().__init__()
         self.in_len = in_len
-        self.num_recordings = num_recordings
         self.num_clusters = num_clusters
         self.z_dim = z_dim
         # Stimulus CNN
@@ -701,15 +702,16 @@ class ClusteringTransformer(nn.Module):
                 for i in range(stim_downsample - 1)
             ],
         )
-        
+
         self.embed_dim = 128
         # VAE
         self.vae = VAE(
-            self.num_recordings * self.num_clusters, 
-            z_n=self.z_dim, 
+            self.num_clusters,
+            z_n=self.z_dim,
             h1_n=32,
             h2_n=32,
-            out_n=self.embed_dim)
+            out_n=self.embed_dim,
+        )
         # Transformer
         self.stim_embed = nn.Conv1d(
             self.l1_num_channels, self.embed_dim, kernel_size=1
@@ -718,7 +720,7 @@ class ClusteringTransformer(nn.Module):
         # 1092 = 992 + 100
         in_stim_len = self.in_len + out_len
         enc_stim_len = 1 + (in_stim_len - 1) // (2**stim_downsample)
-        enc_len = enc_stim_len + 1 # 1 for VAE encoding.
+        enc_len = enc_stim_len + 1  # 1 for VAE encoding.
         self.pos_embed = nn.Parameter(torch.randn(enc_len, self.embed_dim))
 
         mlp_expansion = 3
@@ -751,13 +753,14 @@ class ClusteringTransformer(nn.Module):
         x = einops.rearrange(x, "b c l -> b l c")
         return x
 
-    def encode_vae(self, rec_id, cluster_id):
-        id_ = rec_id * self.num_clusters + cluster_id
+    def encode_vae(self, cluster_id):
+        # For now, we just use the cluster_id directly.
+        id_ = cluster_id
         z_decode, z_mu, z_logvar = self.vae(id_)
         return z_decode, z_mu, z_logvar
 
-    def forward(self, snippet, rec_id, cluster_id):
-        z_decode, z_mu, z_logvar = self.encode_vae(rec_id, cluster_id)
+    def forward(self, snippet, cluster_id):
+        z_decode, z_mu, z_logvar = self.encode_vae(cluster_id)
         x_stim = self.encode_stimulus(snippet[:, 0:-1])
         z = einops.rearrange(z_decode, "b c -> b () c")
         x = torch.cat([x_stim, z], dim=1)
@@ -766,13 +769,22 @@ class ClusteringTransformer(nn.Module):
         x = self.decode(x)
         return x, z_mu, z_logvar
 
+
 class TransformerModel(nn.Module):
     def __init__(
-        self, in_len, out_len, stim_downsample, num_recordings, num_clusters,
-        z_dim=2, num_heads=8, head_dim=64, num_tlayers=6, spike_patch_len=8):
+        self,
+        in_len,
+        out_len,
+        stim_downsample,
+        num_clusters,
+        z_dim=2,
+        num_heads=8,
+        head_dim=64,
+        num_tlayers=6,
+        spike_patch_len=8,
+    ):
         super().__init__()
         self.in_len = in_len
-        self.num_recordings = num_recordings
         self.num_clusters = num_clusters
         self.z_dim = z_dim
         # Stimulus CNN
@@ -813,15 +825,16 @@ class TransformerModel(nn.Module):
                 for i in range(stim_downsample - 1)
             ],
         )
-        
+
         self.embed_dim = 128
         # VAE
         self.vae = VAE(
-            self.num_recordings * self.num_clusters, 
-            z_n=self.z_dim, 
+            self.num_clusters,
+            z_n=self.z_dim,
             h1_n=32,
             h2_n=32,
-            out_n=self.embed_dim)
+            out_n=self.embed_dim,
+        )
         # Transformer
         self.spike_patch_len = spike_patch_len
         self.stim_embed = nn.Conv1d(
@@ -833,7 +846,7 @@ class TransformerModel(nn.Module):
         enc_stim_len = 1 + (in_stim_len - 1) // (2**stim_downsample)
         enc_spikes_len = math.ceil(self.in_len // self.spike_patch_len)
         self.spike_pad = enc_spikes_len * self.spike_patch_len - self.in_len
-        enc_len = enc_stim_len + enc_spikes_len + 1 # 1 for VAE encoding.
+        enc_len = enc_stim_len + enc_spikes_len + 1  # 1 for VAE encoding.
         self.pos_embed = nn.Parameter(torch.randn(enc_len, self.embed_dim))
 
         self.spikes_embed = nn.Linear(self.spike_patch_len, self.embed_dim)
@@ -875,13 +888,13 @@ class TransformerModel(nn.Module):
         x = self.spikes_embed(x)
         return x
 
-    def encode_vae(self, rec_id, cluster_id):
-        id_ = rec_id * self.num_clusters + cluster_id
+    def encode_vae(self, cluster_id):
+        id_ = cluster_id
         z_decode, z_mu, z_logvar = self.vae(id_)
         return z_decode, z_mu, z_logvar
 
-    def forward(self, snippet, rec_id, cluster_id):
-        z_decode, z_mu, z_logvar = self.encode_vae(rec_id, cluster_id)
+    def forward(self, snippet, cluster_id):
+        z_decode, z_mu, z_logvar = self.encode_vae(cluster_id)
         x_stim = self.encode_stimulus(snippet[:, 0:-1])
         x_spikes = self.encode_spikes(snippet[:, -1][:, : self.in_len])
         z = einops.rearrange(z_decode, "b c -> b () c")
@@ -900,7 +913,7 @@ class DistanceFieldCnnModel(nn.Module):
         super(DistanceFieldCnnModel, self).__init__()
         self.in_len = in_len
         self.out_len = out_len
-        # led_channels, mean(led_channels), num_clusters 
+        # led_channels, mean(led_channels), num_clusters
         self.num_input_channels = self.LED_CHANNELS * 2 + self.NUM_CLUSTERS
         self.l1_num_channels = 50
         self.l2_num_channels = 50

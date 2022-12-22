@@ -21,7 +21,46 @@ def recs():
     return res
 
 
-def test_create_multi_cluster_df_datasets(rec0, rec1, rec2):
+def test_recording_splits(rec0, rec12):
+    """
+    Tests that:
+        1. Two recordings are split without throwing an exception.
+        2. Each split has 3 parts (for train, val, test).
+        3. The number of clusters filtered out is correct for a single
+            recording (Chicken_17_08_21_Phase_00).
+    """
+    # Setup
+    num_clusters = rec12.num_clusters()
+    assert (
+        num_clusters == 154
+    ), "This should always be 154 for Chicken_17_08_21_Phase_00"
+    expected_post_filter_clusters = 122
+
+    # Test
+    # 1.
+    rsplits = list(
+        sp.recording_splits([rec0, rec12], downsample=18, num_workers=10)
+    )
+    assert len(rsplits) == 2, "Two recordings => two splits."
+    # 2.
+    assert len(rsplits[0]) == len(rsplits[1]) == 3, "Train, val, test."
+    rec12_splits = rsplits[1]
+    # 3.
+    assert (
+        rec12_splits[0].num_clusters()
+        == rec12_splits[1].num_clusters()
+        == rec12_splits[2].num_clusters()
+    ), "All splits should have the same number of clusters."
+    assert rec12_splits[0].num_clusters() == expected_post_filter_clusters, (
+        "The MAX_SPIKE_RATE, MIN_SPIKES and SPLIT_RATIO defined in "
+        "spikeprediction.py are considered constants. They determine the number"
+        " of clusters that remain after filtering. The number of clusters "
+        "should only change if these values are changed. For "
+        "Chicken_17_08_21_Phase_00, there are 122 clusters after filtering."
+    )
+
+
+def test_create_multi_cluster_df_datasets(rec0, rec1, rec2, rec_cluster_ids):
     # Setup
     # Note down the expected number of clusters. These were calculated once
     # in a Jupyter notebook. It's not a very good ground truth, as it was using
@@ -41,15 +80,21 @@ def test_create_multi_cluster_df_datasets(rec0, rec1, rec2):
         + rec2.num_clusters()
         - expected_num_filtered
     )
+    downsample = 18
+    rec_splits = list(
+        sp.recording_splits(
+            [rec0, rec1, rec2], downsample=downsample, num_workers=10
+        )
+    )
 
     # Test
     train_ds, val_ds, test_ds = sp.create_multi_cluster_df_datasets(
-        [rec0, rec1, rec2],
+        rec_splits,
         input_len=992,
         output_len=100,
-        downsample=18,
+        downsample=downsample,
         stride=17,
-        num_workers=5,
+        rec_cluster_ids=rec_cluster_ids,
     )
     assert (
         expected_num_clusters
@@ -79,6 +124,9 @@ def test_trainable_factories(recs):
             output_lenghts_ms,
         )
     )
+    num_recs = len(recs)
+    max_num_clusters = max(rec.num_clusters() for rec in recs)
+
     # Get default options from arg parser.
     _, parser = sp.arg_parsers()
     default_opts = parser.parse_args([])
@@ -87,24 +135,38 @@ def test_trainable_factories(recs):
 
     # Test
     for config in configs:
+        rsplits = list(
+            sp.recording_splits(
+                recs, downsample=config.downsample, num_workers=10
+            )
+        )
+        single_cluster_splits = list(
+            sp.recording_splits(
+                single_cluster, downsample=config.downsample, num_workers=10
+            )
+        )[0]
         assert (
             sp.LinearNonLinearTGroup.create_trainable(
-                single_cluster, config, default_opts
+                single_cluster_splits, config, default_opts
             )
         ) is not None
         assert (
             sp.DistFieldCnnTGroup.create_trainable(
-                single_cluster, config, default_opts
+                single_cluster_splits, config, default_opts
             )
         ) is not None
         assert (
             sp.MultiClusterDistFieldTGroup.create_trainable(
-                recs, config, default_opts
+                rsplits, config, default_opts, num_recs, max_num_clusters
             )
         ) is not None
         assert (
-            sp.TransformerTGroup.create_trainable(recs, config, default_opts)
+            sp.TransformerTGroup.create_trainable(
+                rsplits, config, default_opts, num_recs, max_num_clusters
+            )
         ) is not None
         assert (
-            sp.ClusteringTGroup.create_trainable(recs, config, default_opts)
+            sp.ClusteringTGroup.create_trainable(
+                rsplits, config, default_opts, num_recs, max_num_clusters
+            )
         ) is not None

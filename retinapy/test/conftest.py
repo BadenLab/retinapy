@@ -19,6 +19,10 @@ def np_rng():
 
 DATA_DIR = pathlib.Path("./data/ff_noise_recordings")
 
+@pytest.fixture
+def rec_cluster_ids():
+    id_map = mea.load_id_info(DATA_DIR)
+    return id_map
 
 @pytest.fixture
 def rec0():

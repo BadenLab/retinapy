@@ -4,6 +4,8 @@ import itertools
 import concurrent.futures
 import logging
 import math
+import json
+import bidict
 from typing import (
     Dict,
     List,
@@ -14,6 +16,7 @@ from typing import (
     Set,
     Iterable,
     Deque,
+    TypeAlias,
 )
 import pathlib
 import pickle
@@ -30,6 +33,8 @@ NUM_STIMULUS_LEDS = 4
 STIMULUS_PATTERN_FILENAME = "stimulus_pattern.h5"
 SPIKE_RESPONSE_FILENAME = "spike_response.pickle"
 RECORDED_STIMULUS_FILENAME = "recorded_stimulus.pickle"
+REC_IDS_FILENAME = "recording_ids.json"
+REC_CLUSTER_IDS_FILENAME = "recording_cluster_ids.json"
 
 
 Stimulus = namedtuple(
@@ -140,7 +145,8 @@ class CompressedSpikeRecording:
     def num_clusters(self) -> int:
         return len(self.cluster_ids)
 
-    def filter_clusters(self,
+    def filter_clusters(
+        self,
         min_rate: Optional[float] = None,
         max_rate: Optional[float] = None,
         min_count: Optional[int] = None,
@@ -244,7 +250,7 @@ class SpikeRecording:
     def __getitem__(self, key):
         """Return a new recording with only data for the given time bin."""
         return SpikeRecording(
-            f"{self.name}-{str(key)}",
+            self.name,
             self.stimulus[key],
             self.spikes[key],
             self.cluster_ids,
@@ -294,18 +300,16 @@ class SpikeRecording:
         return self
 
     def spike_snippets(self, total_len: int, post_spike_len: int):
-        snippets_by_cluster = []
+        snippets_by_cluster = {}
         # Can this be done in a single call?
         # Could make compress_spikes operate on 2d array, then sent all
         # spikes to spike_snippets then split with np.split().
         for c in range(self.spikes.shape[1]):
-            snippets_by_cluster.append(
-                spike_snippets(
-                    self.stimulus,
-                    compress_spikes(self.spikes[:, c]),
-                    total_len,
-                    post_spike_len,
-                )
+            snippets_by_cluster[self.cluster_ids[c]] = spike_snippets(
+                self.stimulus,
+                compress_spikes(self.spikes[:, c]),
+                total_len,
+                post_spike_len,
             )
         return snippets_by_cluster
 
@@ -389,16 +393,16 @@ def mirror_split(recording: SpikeRecording, split_ratio: Sequence[int]):
 def remove_few_spike_clusters(splits, min_counts):
     """Skip clusters that have few spikes in one of the data splits."""
     if len(splits) != len(min_counts):
-        raise ValueError("The number of splits and minimum counts must be "
-                         f"the same. Got ({len(splits)}, {min_counts}).")
+        raise ValueError(
+            "The number of splits and minimum counts must be "
+            f"the same. Got ({len(splits)}, {min_counts})."
+        )
     to_keep = np.ones(shape=len(splits[0].cluster_ids), dtype=bool)
     for s, min_count in zip(splits, min_counts):
-        np.logical_and(
-                np.sum(s.spikes, axis=0) > min_count,
-                to_keep,
-                to_keep)
-    filtered_splits = [s.clusters(
-        set(np.array(s.cluster_ids)[to_keep])) for s in splits]
+        np.logical_and(np.sum(s.spikes, axis=0) > min_count, to_keep, to_keep)
+    filtered_splits = tuple(
+        s.clusters(set(np.array(s.cluster_ids)[to_keep])) for s in splits
+    )
     return filtered_splits
 
 
@@ -498,6 +502,13 @@ def stim_and_spike_rows(
     return stim_row, response_rows
 
 
+def _assert_dir_exists(p: pathlib.Path):
+    if not p.exists():
+        raise ValueError(f"Directory does not exist: ({p}).")
+    if not p.is_dir():
+        raise ValueError(f"Path is not a directory: ({p}).")
+
+
 def _assert_file_exists(p: pathlib.Path):
     if not p.exists():
         raise ValueError(f"File does not exist: ({p}).")
@@ -516,6 +527,86 @@ def _load_data_files(data_dir: pathlib.Path):
     stim_recordings = load_recorded_stimulus(stimulus_recording_path)
     response_recordings = load_response(response_recording_path)
     return stim_pattern, stim_recordings, response_recordings
+
+
+def _rec_cluster_ids(recs: Iterable[CompressedSpikeRecording]):
+    """Create a rec_name -> cluster_id -> ID mapping.
+    """
+    res = {}
+    tally = 0
+    for r in recs:
+        res[r.name] = {}
+        for c_id in r.cluster_ids:
+            res[r.name][c_id] = tally
+            tally += 1
+    return res
+
+
+def save_id_info(
+    recs: Iterable[CompressedSpikeRecording],
+    rec_id_map: Dict[str, int],
+    data_dir: pathlib.Path | str,
+):
+    """
+    Saves two dictionaries to disk:
+        1. recording-name -> recording-id
+        2. recording-name -> cluster-id -> ID.
+
+    The purpose of the loading and saving of id information is to maintain a
+    consistent way of referring to recordings and clusters. 
+    An example of where this is needed is when training a multi-cluster model
+    on a subset of the data. This subset could have been selected manually 
+    and/or automatically by the filtering proceedure that removes unsuitable
+    clusters, such as those with too few spikes. It is important to be able to 
+    obtain the embeddings for the clusters that were trained on, but not the 
+    ones that were not. Without a global ID, a snapshot of the data along with
+    the filtering routine used while training would be needed. 
+    """
+    data_dir = pathlib.Path(data_dir)
+    _assert_dir_exists(data_dir)
+    with open(data_dir / REC_IDS_FILENAME, "w") as f:
+        json.dump(rec_id_map, f)
+    recs = sorted(recs, key=lambda r: rec_id_map[r.name])
+    with open(data_dir / REC_CLUSTER_IDS_FILENAME, "w") as f:
+        json.dump(_rec_cluster_ids(recs), f)
+
+
+RecClusterId : TypeAlias = Tuple[str, int]
+# A dictionary, recording-name <-> id
+RecIds: TypeAlias = bidict.BidirectionalMapping[str, int]
+# A dictionary, (recording-name, cluster_id) <-> another cluster id
+RecClusterIds: TypeAlias = bidict.BidirectionalMapping[RecClusterId, int]
+
+
+def load_id_info(data_dir: pathlib.Path | str) -> Tuple[RecIds, RecClusterIds]:
+    """Loads two dictionaries from disk, stored as JSON.
+
+    The two mappings are:
+        1. recording-name -> recording-id
+        2. (recording-name, cluster-id) -> ID.
+    """
+    data_dir = pathlib.Path(data_dir)
+    _assert_dir_exists(data_dir)
+    rec_id_path = data_dir / REC_IDS_FILENAME
+    rec_cluster_id_path = data_dir / REC_CLUSTER_IDS_FILENAME
+    _assert_file_exists(rec_id_path)
+    _assert_file_exists(rec_cluster_id_path)
+    with open(rec_id_path, "r") as f:
+        rec_ids = json.load(f)
+        # Convert from normal to bi-directional dictionary.
+        rec_ids = bidict.bidict(rec_ids)
+    with open(rec_cluster_id_path, "r") as f:
+        rec_cluster_ids = json.load(f)
+    # The recording-cluster map will be flattened to take tuples.
+    flat_rec_cluster_ids = bidict.bidict()
+    for r_name, d1 in rec_cluster_ids.items():
+        for c_id, c_id_flat in d1.items():
+            # Don't forget to convert c_id to int. It became a string as 
+            # JSON only allows string dictionary keys.
+            c_id = int(c_id)
+            assert type(c_id) == type(c_id_flat) == int
+            flat_rec_cluster_ids[(r_name, c_id)] = c_id_flat
+    return rec_ids, flat_rec_cluster_ids
 
 
 def load_3brain_recordings(
@@ -863,7 +954,7 @@ def downsample_stimulus(stimulus: np.ndarray, factor: int) -> np.ndarray:
     time_axis = 0
     logging.info(
         f"Starting: downsampling by {factor}. Initial length "
-        f"{stimulus.shape[time_axis]}."
+        f"{stimulus.shape[time_axis]:,}."
     )
     # SciPy recommends to never exceed 13 on a single decimation call.
     # See: https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.decimate.html
@@ -879,7 +970,7 @@ def downsample_stimulus(stimulus: np.ndarray, factor: int) -> np.ndarray:
         logging.info(f"Finished: decimating by {sf}")
     logging.info(
         f"Finished: downsampling. Resulting length "
-        f"({stimulus.shape[time_axis]})."
+        f"({stimulus.shape[time_axis]:,})."
     )
     return stimulus
 

@@ -116,7 +116,7 @@ def test_ConcatDistFieldDataset(two_exps, np_rng, stride):
 
     # 2. Two clusters from the same recording should share the same stimulus.
     # 2.1 For the first recording.
-    num_timesteps1 = distfield_ds1.ds.num_strided_timesteps
+    num_timesteps1 = distfield_ds1.ds._num_strided_timesteps
     test_idxs = np_rng.integers(0, num_timesteps1, num_timestep_trials)
     for idx in test_idxs:
         s1 = concat_ds[idx]["snippet"][0 : mea.NUM_STIMULUS_LEDS, :]
@@ -125,7 +125,7 @@ def test_ConcatDistFieldDataset(two_exps, np_rng, stride):
         ]
         np.testing.assert_allclose(s1, s2, err_msg=f"idx={idx}")
     # 2.2 For the second recording.
-    num_timesteps2 = distfield_ds2.ds.num_strided_timesteps
+    num_timesteps2 = distfield_ds2.ds._num_strided_timesteps
     ds_2_start_idx = len(distfield_ds1)
     test_idxs = np_rng.integers(
         ds_2_start_idx, ds_2_start_idx + num_timesteps2, num_timestep_trials
@@ -137,13 +137,13 @@ def test_ConcatDistFieldDataset(two_exps, np_rng, stride):
         ]
         np.testing.assert_allclose(s1, s2, err_msg=f"idx={idx}")
 
-    # 3. A cluster's snippets should have the same 'rec_id' and 'cluster_id'.
+    # 3. A cluster's snippets should have the same 'cluster_id'.
     # 3.1 For the first recording.
     cluster_idxs = np_rng.integers(
         0, len(distfield_ds1.recording.cluster_ids), num_cluster_trials
     )
     for c_idx in cluster_idxs:
-        offset = c_idx * distfield_ds1.ds.num_strided_timesteps
+        offset = c_idx * distfield_ds1.ds._num_strided_timesteps
         test_idxs = np_rng.integers(0, num_timesteps1, num_timestep_trials)
         for idx in test_idxs:
             c_idx_from_ds = concat_ds[idx + offset]["cluster_id"]
@@ -156,7 +156,7 @@ def test_ConcatDistFieldDataset(two_exps, np_rng, stride):
     )
     for c_idx in cluster_idxs:
         offset = (
-            len(distfield_ds1) + c_idx * distfield_ds2.ds.num_strided_timesteps
+            len(distfield_ds1) + c_idx * distfield_ds2.ds._num_strided_timesteps
         )
         test_idxs = np_rng.integers(0, num_timesteps2, num_timestep_trials)
         for idx in test_idxs:

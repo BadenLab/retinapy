@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import bisect
 import math
-from typing import Tuple, Optional, List, Iterable
+from typing import Tuple, Optional, List, Iterable, Dict, TypeAlias
 
 
 def _num_snippets(num_timesteps: int, snippet_len: int, stride: int) -> int:
@@ -32,9 +32,21 @@ def _num_snippets(num_timesteps: int, snippet_len: int, stride: int) -> int:
 
 
 class SnippetDataset(torch.utils.data.Dataset):
+    _num_strided_timesteps : int
+    _stride : int
+
     def __init__(
-        self, recording: mea.SpikeRecording, snippet_len: int, stride: int = 1
+        self,
+        recording: mea.SpikeRecording,
+        snippet_len: int,
+        stride: int = 1,
+        rec_cluster_ids: Optional[mea.RecClusterIds] = None,
     ):
+        """
+        Args:
+            rec_cluster_ids: an optional map to be used to determine the
+                cluster id used for training.
+        """
         if snippet_len > len(recording):
             raise ValueError(
                 f"Snippet length ({snippet_len}) is larger than "
@@ -42,23 +54,21 @@ class SnippetDataset(torch.utils.data.Dataset):
             )
         self.recording = recording
         self.snippet_len = snippet_len
-        self.stride = stride
         self.num_clusters = len(recording.cluster_ids)
         self.num_timesteps = len(recording) - snippet_len + 1
+        self.rec_cluster_ids = rec_cluster_ids
         assert (
             self.num_timesteps > 0
         ), "Snippet length is longer than the recording."
-        self.num_strided_timesteps = _num_snippets(
-            len(recording), snippet_len, stride
-        )
+        self.stride = stride
 
     def __len__(self):
         """
         Calculates the number of samples in the dataset.
         """
-        return self.num_strided_timesteps * self.num_clusters
+        return self._num_strided_timesteps * self.num_clusters
 
-    def _decode_index(self, index: int) -> Tuple[int, int]:
+    def _decode_index(self, index: int) -> Tuple[int, int, int]:
         """
         Decodes the index into the timestep and cluster id.
 
@@ -67,25 +77,50 @@ class SnippetDataset(torch.utils.data.Dataset):
         increases as the index increases and wraps to the next cluster id when
         it reaches the end of the recording.
         """
-        timestep_idx = self.stride * (index % self.num_strided_timesteps)
-        cluster_idx = index // self.num_strided_timesteps
-        return timestep_idx, cluster_idx
+        timestep_idx = self.stride * (index % self._num_strided_timesteps)
+        cluster_idx = index // self._num_strided_timesteps
+        if self.rec_cluster_ids is not None:
+            cluster_id = self.rec_cluster_ids[
+                (self.recording.name, self.recording.cluster_ids[cluster_idx])
+            ]
+        else:
+            cluster_id = cluster_idx
+        return timestep_idx, cluster_idx, cluster_id
 
     def __getitem__(self, idx):
         """
         Returns the snippet at the given index.
         """
-        start_time_idx, cluster_idx = self._decode_index(idx)
+        start_time_idx, cluster_idx, cluster_id = self._decode_index(idx)
         end_time_idx = start_time_idx + self.snippet_len
-        assert end_time_idx <= len(self.recording)
+        assert end_time_idx <= len(
+            self.recording
+        ), f"{end_time_idx} <= {len(self.recording)}"
         rec = self.recording.stimulus[start_time_idx:end_time_idx].T
         spikes = self.recording.spikes[start_time_idx:end_time_idx, cluster_idx]
-        res = {"stimulus": rec, "spikes": spikes, "cluster_id": cluster_idx}
+        res = {"stimulus": rec, "spikes": spikes, "cluster_id": cluster_id}
         return res
 
     @property
     def sample_rate(self):
         return self.recording.sample_rate
+
+    @property
+    def stride(self):
+        return self._stride
+
+    @stride.setter
+    def stride(self, stride : int):
+        self._stride = stride
+        self._num_strided_timesteps = _num_snippets(
+            len(self.recording), self.snippet_len, stride
+        )
+
+    @property
+    def num_strided_timesteps(self):
+        return self._num_strided_timesteps
+        
+
 
 
 class SpikeCountDataset(torch.utils.data.Dataset):
@@ -100,13 +135,17 @@ class SpikeCountDataset(torch.utils.data.Dataset):
     """
 
     def __init__(
-        self, recording: mea.SpikeRecording, input_len: int, output_len: int
+        self,
+        recording: mea.SpikeRecording,
+        input_len: int,
+        output_len: int,
+        stride: int = 1,
     ):
         self.output_len = output_len
         self.input_len = input_len
         self.total_len = input_len + output_len
         self.recording = recording
-        self.ds = SnippetDataset(recording, self.total_len)
+        self.ds = SnippetDataset(recording, self.total_len, stride)
 
     def __len__(self):
         """
@@ -114,9 +153,7 @@ class SpikeCountDataset(torch.utils.data.Dataset):
 
         There will be one sample for every timestep in the recording.
         """
-        res = len(self.recording) - self.total_len + 1
-        assert res > 0, "Snippet length is longer than the recording."
-        return res
+        return len(self.ds)
 
     def __getitem__(self, idx):
         """
@@ -168,6 +205,7 @@ class DistFieldDataset(torch.utils.data.Dataset):
         pad: int,
         dist_clamp: float,
         stride: int = 1,
+        rec_cluster_ids: Optional[mea.RecClusterIds] = None,
         enable_augmentation: bool = True,
         allow_cheating: bool = False,
     ):
@@ -176,7 +214,7 @@ class DistFieldDataset(torch.utils.data.Dataset):
         self.pad = pad
         self.dist_clamp = dist_clamp
         self.ds = SnippetDataset(
-            recording, snippet_len + self.pad, stride=stride
+            recording, snippet_len + self.pad, stride, rec_cluster_ids
         )
         self.mask_slice = slice(mask_begin, mask_end)
         self.allow_cheating = allow_cheating
@@ -204,6 +242,11 @@ class DistFieldDataset(torch.utils.data.Dataset):
     @property
     def stride(self):
         return self.ds.stride
+
+    # Setter property for stride
+    @stride.setter
+    def stride(self, stride: int):
+        self.ds.stride = stride
 
     @classmethod
     def mask_start(cls, spikes):
@@ -340,7 +383,6 @@ class DistFieldDataset(torch.utils.data.Dataset):
         return res
 
 
-
 class LabeledConcatDataset(torch.utils.data.Dataset):
     """
     Dataset that concatenates datasets and inserts a dataset label.
@@ -368,14 +410,33 @@ class LabeledConcatDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         datasets: Iterable[torch.utils.data.Dataset],
-        label_key: str = "id",
+        label_key: Optional[str] = None,
     ) -> None:
+        """
+        Args:
+            label_key: If not None, the dataset index will be included in each
+                sample, under this key. If None, the dataset index will not be
+                included. Example, label_key = "id". This was originally added
+                to allow the recording id to be included in the sample when
+                multiple recordings form a concatenated dataset. However,
+                to allow for more flexibility in what recordings are loaded in
+                train vs. test time, this responsibility has been delegated to
+                the underlying per-recording dataset. We do however need to
+                enable the recording identifier, as it is disabled by default.
+                At the moment, this is expected to be done to each dataset
+                before they are passed in here. With label_key = None, this
+                class is equivalent to the PyTorch ConcatDataset. Might end
+                up removing it if the label key isn't needed anymore.
+        """
         super(LabeledConcatDataset, self).__init__()
         self.datasets = list(datasets)
         self.label_key = label_key
         assert len(self.datasets) > 0, (
             "datasets should not be an empty " "iterable"
         )
+        self._calc_size()
+
+    def _calc_size(self):
         for d in self.datasets:
             assert not isinstance(
                 d, torch.utils.data.IterableDataset
@@ -398,10 +459,11 @@ class LabeledConcatDataset(torch.utils.data.Dataset):
         else:
             sample_idx = idx - self.cumulative_sizes[dataset_idx - 1]
         sample = self.datasets[dataset_idx][sample_idx]
-        assert isinstance(
-            sample, dict
-        ), "Sample must be a dictionary in order to add a label."
-        sample[self.label_key] = dataset_idx
+        if self.label_key:
+            assert isinstance(
+                sample, dict
+            ), "Sample must be a dictionary in order to add a label."
+            sample[self.label_key] = dataset_idx
         return sample
 
 
@@ -420,7 +482,7 @@ class ConcatDistFieldDataset(LabeledConcatDataset):
     """
 
     def __init__(self, datasets: Iterable[DistFieldDataset]) -> None:
-        super().__init__(datasets, label_key="rec_id")
+        super().__init__(datasets, label_key=None)
         # Check for consistency
         sample_rate = self.datasets[0].sample_rate
         for ds in self.datasets:
@@ -437,6 +499,12 @@ class ConcatDistFieldDataset(LabeledConcatDataset):
     def stride(self):
         return self.datasets[0].stride
 
+    @stride.setter
+    def stride(self, stride):
+        for ds in self.datasets:
+            ds.stride = stride
+        self._calc_size()
+
     @property
     def num_recordings(self):
         return len(self.datasets)
@@ -445,4 +513,3 @@ class ConcatDistFieldDataset(LabeledConcatDataset):
     def num_clusters(self):
         res = sum(d.recording.num_clusters() for d in self.datasets)
         return res
-
