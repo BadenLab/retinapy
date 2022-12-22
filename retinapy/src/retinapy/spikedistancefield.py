@@ -1,10 +1,12 @@
 import numpy as np
 import math
-from typing import Optional, OrderedDict, Tuple
+from typing import Optional, OrderedDict, Tuple, Iterable
 from collections import namedtuple
 from collections import defaultdict
 import torch
 import torch.nn.functional as F
+import einops
+import retinapy.spikeprediction as sp
 
 """
 Notes:
@@ -25,48 +27,6 @@ Notes:
       non-signed distance. That's what I'll try next (and probably should have 
       tried first).
 """
-
-def bi_distance_field(spikes: np.ndarray, default_dist: int, 
-                      max_dist: Optional[int]=None):
-    """
-    Calculates the bi-directional distance field of a spike train.
-
-    Two distances are calculated for each timestep:
-        - how far the timestep is since the previous spike ("distance after")
-        - how far the timestep is since the next spike ("distance before")
-
-    For example, if a spike happens at timestep t=4, then we have:
-        a) dist_after[4] = dist_before[4] = 0
-        b) dist_after[5] = 1
-        c) dist_before[3] = 1
-        d) we can't say anything about dist_after[3] or dist_before[5].
-
-    
-    The distance field is initialized with the default_dist value.
-    max_dist sets the maximum the maximum distance value.
-    """
-    raise NotImplementedError("Failing test. See GitHub issue #2.")
-    dist_after = np.full_like(spikes, default_dist, int)
-    dist_before = np.full_like(spikes, default_dist, int)
-    spike_indicies = (spikes == 1).nonzero()[0]
-    r = np.arange(0, len(spikes))
-    if spike_indicies is not None:
-        # after
-        endpoints = list(spike_indicies)
-        diff = np.diff(endpoints)
-        for idx in range(len(endpoints) - 1):
-            dist_after[endpoints[idx] : endpoints[idx + 1]] = r[0 : diff[idx]]
-        # before
-        endpoints = [-1] + list(spike_indicies)
-        diff = np.diff(endpoints)
-        for idx in range(len(endpoints) - 1):
-            dist_before[endpoints[idx] + 1 : endpoints[idx + 1] + 1] = np.flip(
-                r[0 : diff[idx]]
-            )
-    if max_dist:
-        dist_before = np.minimum(dist_before, max_dist)
-        dist_after = np.minimum(dist_after, max_dist)
-    return dist_before, dist_after
 
 
 def distance_field(spikes: np.ndarray, default_distance: float):
@@ -96,17 +56,21 @@ def spike_interval(spikes: np.ndarray, default_count: int):
     count_field[spike_indicies] = 0
     counts = np.diff(spike_indicies) - 1
     for idx in range(len(counts)):
-        count_field[spike_indicies[idx] + 1 : spike_indicies[idx + 1]] = counts[idx]
+        count_field[spike_indicies[idx] + 1 : spike_indicies[idx + 1]] = counts[
+            idx
+        ]
     return count_field
 
 
 def distance_field2(spikes, default_dist):
     """An alternative (non-vector) distance field implementation.
-    
-    Not used at the moment. Leaving it here for reference. 
+
+    Not used at the moment. Leaving it here for reference.
     """
-    dist = [default_dist,] * len(spikes)
-    spike_indicies = [idx for idx,v in enumerate(spikes) if v == 1]
+    dist = [
+        default_dist,
+    ] * len(spikes)
+    spike_indicies = [idx for idx, v in enumerate(spikes) if v == 1]
 
     def _dfs(idx, cur_dist):
         if dist[idx] <= cur_dist:
@@ -124,13 +88,14 @@ def distance_field2(spikes, default_dist):
 
 # Below are various attempts at inference. Very WIP.
 
-def quick_inference_from_df(dist, target_interval, threshold=0.1):
+
+def quick_inference(dist, target_interval, threshold=0.1):
     dist = dist[:, target_interval[0] : target_interval[1]]
     num_spikes = torch.sum(dist < threshold, dim=1)
     return num_spikes
 
 
-def quick_inference_from_df2(dist, target_interval, threshold=0.1):
+def quick_inference2(dist, target_interval, threshold=0.1):
     dist = dist[:, target_interval[0] : target_interval[1]]
     kernel = torch.FloatTensor(
         [[[0.006, 0.061, 0.242, 0.383, 0.242, 0.061, 0.006]]]
@@ -142,17 +107,7 @@ def quick_inference_from_df2(dist, target_interval, threshold=0.1):
     return transitions
 
 
-def quick_inference_from_bi_df(
-    dist_before, dist_after, target_interval, threshold=0.1
-):
-    dist_before = dist_before[:, target_interval[0] : target_interval[1]]
-    dist_after = dist_after[:, target_interval[0] : target_interval[1]]
-    # match = torch.sum((dist_after < threshold) * (dist_before < threshold), dim=1)
-    match = torch.sum((dist_after < threshold), dim=1)
-    return match
-
-
-def mle_inference_from_df(
+def mle_inference_via_dp(
     dist: torch.Tensor,
     lhs_spike,
     rhs_spike,
@@ -170,7 +125,7 @@ def mle_inference_from_df(
     _len = len(dist)
     device = dist.device
 
-    # If a-1 and b+1 are the indicies of two spikes, what is the energy 
+    # If a-1 and b+1 are the indicies of two spikes, what is the energy
     # contributed by the elements in (a,b)?
     memo = {}  # (a,b, num_allowed) -> ('energy')
 
@@ -196,7 +151,9 @@ def mle_inference_from_df(
     global_best_energy = math.inf
     low_energy_positions = dist < 20
 
-    def _dfs(a, b, energy_so_far, num_allowed_spikes) -> Tuple[float, Tuple[int, ...]]:
+    def _dfs(
+        a, b, energy_so_far, num_allowed_spikes
+    ) -> Tuple[float, Tuple[int, ...]]:
         nonlocal global_best_energy
         if a >= b:
             return 0, ()
@@ -214,21 +171,463 @@ def mle_inference_from_df(
                 continue
             for num_l_spikes in range(num_allowed_spikes):
                 for num_r_spikes in range(num_allowed_spikes - num_l_spikes):
-                    lhs_energy, lhs_seq = _dfs(a, candidate_pos - 1, energy_so_far, num_l_spikes)
+                    lhs_energy, lhs_seq = _dfs(
+                        a, candidate_pos - 1, energy_so_far, num_l_spikes
+                    )
                     spike_pos_energy = min(dist[candidate_pos], max_clamp)
                     energy = energy_so_far + lhs_energy + spike_pos_energy
-                    rhs_energy, rhs_seq = _dfs(candidate_pos + 1, b, energy, num_r_spikes)
+                    rhs_energy, rhs_seq = _dfs(
+                        candidate_pos + 1, b, energy, num_r_spikes
+                    )
                     energy += rhs_energy
                     if energy < best_energy:
                         best_energy = energy
                         best_seq = lhs_seq + (candidate_pos,) + rhs_seq
-                        if (best_energy+energy_so_far) < global_best_energy:
+                        if (best_energy + energy_so_far) < global_best_energy:
                             global_best_energy = best_energy
         memo[(a, b)] = (best_energy, best_seq, num_allowed_spikes)
         return best_energy, best_seq
 
     e, seq = _dfs(0, _len - 1, energy_so_far=0, num_allowed_spikes=max_n)
     return e, seq
+
+
+# Below, we use an expectation-maximization algorithm approximation to do the
+# inference.
+class SpikeLinkedList:
+    class Node:
+        def __init__(self, pos: int, target_dist: torch.Tensor):
+            self.pos = pos
+            self.lnode = None
+            self.rnode = None
+            self.target_dist = target_dist
+            self.is_l_shared = None
+            self.is_r_shared = None
+            self.is_removed = False
+            self.device = target_dist.device
+
+        def responsibility(self):
+            assert not self.is_removed
+            if self.lnode is None:
+                left_r = 0
+            else:
+                num_shared = (self.pos - 1) - self.lnode.pos
+                # num_responsible = (num_shared + 1) // 2
+                num_responsible = num_shared // 2
+                left_r = self.pos - num_responsible
+            if self.rnode is None:
+                right_r = len(self.target_dist)
+            else:
+                num_shared = (self.rnode.pos - 1) - self.pos
+                # num_responsible = (num_shared + 1) // 2
+                num_responsible = num_shared // 2
+                right_r_inclusive = self.pos + num_responsible
+                right_r = self.pos + num_responsible + 1
+            assert left_r < right_r
+            assert left_r <= self.pos and right_r > self.pos, (
+                "Responsibility "
+                "must at least include self.pos (self.pos, left_r, right_r)"
+                f" was ({self.pos}, {left_r}, {right_r})"
+            )
+            return (left_r, right_r)
+
+        def dist_arrs(self, l_idx, r_idx):
+            """
+            r_idx is exclusive (inclusive + 1)
+            """
+            assert not self.is_removed
+            if l_idx > self.pos or r_idx <= self.pos:
+                # For the current use case, we always ask for the full responsibility of
+                # a node, and so it's correct to assert this bound. However, the method
+                # is more general, at it may be desired later to relax this.
+                raise ValueError(
+                    "Left and right bounds should contain self.pos. Got "
+                    f"({l_idx, r_idx}) with self.pos = {self.pos}"
+                )
+            dist = torch.zeros(size=[r_idx - l_idx], device=self.device)
+            dist_inverted = torch.zeros(
+                size=[r_idx - l_idx], device=self.device
+            )
+            rel_pos = self.pos - l_idx
+            # LEFT
+            if l_idx < self.pos:
+                ldist = (
+                    torch.flip(
+                        torch.arange(self.pos - l_idx, device=self.device),
+                        dims=(0,),
+                    )
+                    + 1
+                )
+                dist[0:rel_pos] = ldist
+                min_replacement_dist = self.pos - l_idx
+                if not self.is_l_shared:
+                    min_replacement_dist += 1
+                if self.lnode:
+                    dist_inverted[0:rel_pos] = (
+                        torch.flip(ldist, dims=(0,)) + min_replacement_dist
+                    )
+                else:
+                    # Special treatment for the last node
+                    assert self.lnode is None
+                    dist_inverted[0:rel_pos] = ldist + (r_idx - self.pos)
+            # RIGHT
+            if r_idx > self.pos:
+                rdist = torch.arange(r_idx - self.pos, device=self.device)
+                dist[rel_pos:] = rdist
+                min_replacement_dist = (r_idx - 1) - self.pos
+                if not self.is_r_shared:
+                    min_replacement_dist += 1
+                # This depends on whether we are the last spike.
+                if self.rnode:
+                    dist_inverted[rel_pos:] = (
+                        torch.flip(rdist, dims=(0,)) + min_replacement_dist
+                    )
+                else:
+                    # Special treatment for the last node
+                    assert self.rnode is None
+                    # I guess that dist_inverted isn't a good name anymore....
+                    # Give all responsibility to the node on the left.
+                    dist_inverted[rel_pos:] = rdist + rel_pos
+                min_dist = 0  # 0.25
+                dist[rel_pos] = min_dist
+            return dist, dist_inverted
+
+        def set_lnode(self, lnode):
+            assert not self.is_removed
+            self.lnode = lnode
+            num_shared = self.pos - lnode.pos - 1
+            # is the left-most point shared?
+            self.is_l_shared = num_shared % 2
+
+        def set_rnode(self, rnode):
+            assert not self.is_removed
+            self.rnode = rnode
+            num_shared = rnode.pos - self.pos - 1
+            # is the right-most point shared?
+            self.is_r_shared = num_shared % 2
+
+    def __init__(
+        self, target_dist: torch.Tensor, lhs_spike: int, max_dist, output_offset
+    ):
+        if lhs_spike > 0:
+            raise ValueError(f"lhs is expected to be negative. ({lhs_spike})")
+        self.lhs_spike = lhs_spike
+        self.max_dist = max_dist
+        self.output_offset = output_offset
+        self.target_dist = target_dist
+        self.init_dist = torch.clamp(
+            torch.arange(len(target_dist), device=self.target_dist.device)
+            - self.lhs_spike,
+            max=self.max_dist,
+        )
+
+        # Create linked list
+        self.first_node = self.Node(pos=0, target_dist=self.target_dist)
+        self.last_node = self.first_node
+        # init_scores = torch.randperm(len(target_dist))
+        init_scores = target_dist
+        self.scores = [(init_scores[0], self.first_node)]
+        self.num_nodes = 1
+        for i in range(1, len(target_dist)):
+            node = self.Node(pos=i, target_dist=self.target_dist)
+            self.last_node.set_rnode(node)
+            node.set_lnode(self.last_node)
+            self.last_node = node
+            self.num_nodes += 1
+            self.scores.append((init_scores[i], node))
+
+    def remove(self, node):
+        if node is None:
+            raise ValueError("Called remove(None)")
+        if node.lnode is None:
+            # Removing the first node
+            self.first_node = node.rnode
+        else:
+            node.lnode.rnode = node.rnode
+        if node.rnode is None:
+            # Removing the last node
+            self.last_node = node.lnode
+        else:
+            node.rnode.lnode = node.lnode
+        self.num_nodes -= 1
+        node.is_removed = True
+        return node.rnode
+
+    def should_remove(self, node):
+        assert not node.is_removed
+        l_idx, r_idx = node.responsibility()
+        curr_dist, alternative_dist = node.dist_arrs(l_idx, r_idx)
+        if node.lnode is None:
+            # We are the first spike, so need special treatment for alternative.
+            assert self.lhs_spike < 0
+            alternative_dist = torch.min(
+                alternative_dist, self.init_dist[0 : len(alternative_dist)]
+            )
+            curr_dist[0 : node.pos] = torch.min(
+                curr_dist[0 : node.pos], self.init_dist[0 : node.pos]
+            )
+        curr_loss = self.loss(curr_dist, self.target_dist[l_idx:r_idx])
+        alternative_loss = self.loss(
+            alternative_dist, self.target_dist[l_idx:r_idx]
+        )
+        threshold = 0.0 # 0.02  # larger, e.g. 0.10 encouranges less spikes
+        res = alternative_loss < curr_loss + threshold
+        best_loss = min(alternative_loss, curr_loss)
+        return res, best_loss
+
+    def loss(self, pdist, tdist):
+        # This next line encourages more spikes. The idea is that the target distance
+        # function is really sharp in log space, and the model is probably not so capable
+        # of reaching the minimum, so don't penalize it when trying to find the MLE set of
+        # spikes.
+        # This is balanced with the "threshold" parameter above.
+        pdist_nn = torch.clamp(
+            sp.DistFieldTrainable_._distfield_to_nn_output(
+                pdist, self.output_offset
+            ),
+            min=-3.5,
+        )
+        # pdist_nn = self.trainable.distfield_to_nn_output(pdist)
+        l1_loss = torch.norm(pdist_nn - tdist)
+        return l1_loss
+
+    def reduce(self):
+        n = self.first_node
+        new_scores = []
+        for s, n in sorted(self.scores, key=lambda s: s[0]):
+            # for s,n in random.sample(self.scores, len(self.scores)):
+            # while n is not None:
+            should_remove, loss = self.should_remove(n)
+            if should_remove:
+                self.remove(n)
+            else:
+                new_scores.append((-loss, n))
+            n = n.rnode
+        self.scores = new_scores
+        return self.num_nodes
+
+    def spike_indicies(self):
+        node = self.first_node
+        res = []
+        while node is not None:
+            res.append(node.pos)
+            node = node.rnode
+        return res
+
+    def infer_spikes(self):
+        num_spikes = self.num_nodes
+        halt = False
+        while not halt:
+            reduced_spikes = self.reduce()
+            if reduced_spikes == num_spikes:
+                halt = True
+            num_spikes = reduced_spikes
+            break
+        spike_indicies = self.spike_indicies()
+        assert len(spike_indicies) == num_spikes
+        spikes = torch.zeros_like(self.target_dist)
+        spikes[spike_indicies] = 1
+        return spikes
+
+
+# TODO: sort out dependencies. Ideally, no dependency on trainable.
+def predict(target_dist, lhs_spike: int, max_dist, output_offset, max_eval_len:
+            Optional[int] = None
+):
+    # TODO: handle lhs_spike
+    if len(target_dist.shape) > 1:
+        raise ValueError("Batches not supported (no batch dim accepted)")
+    ll = SpikeLinkedList(target_dist, lhs_spike, max_dist, output_offset)
+    res = ll.infer_spikes()
+    if max_eval_len is not None:
+        res = res[0:max_eval_len]
+    return res
+
+def predict_sum(target_dist, lhs_spike: int, max_dist, output_offset, 
+                eval_len : Optional[int] = None):
+    mle_spikes = predict(target_dist, lhs_spike, max_dist, output_offset)
+    l = eval_len if eval_len is not None else len(mle_spikes)
+    res = mle_spikes[0:l].sum()
+    return res
+
+
+###############################################################################
+#
+# Below is the bi-directional distance field code. Not used.
+#
+###############################################################################
+
+
+def bi_distance_field(
+    spikes: np.ndarray, default_dist: int, max_dist: Optional[int] = None
+):
+    """
+    Calculates the bi-directional distance field of a spike train.
+
+    Two distances are calculated for each timestep:
+        - how far the timestep is since the previous spike ("distance after")
+        - how far the timestep is since the next spike ("distance before")
+
+    For example, if a spike happens at timestep t=4, then we have:
+        a) dist_after[4] = dist_before[4] = 0
+        b) dist_after[5] = 1
+        c) dist_before[3] = 1
+        d) we can't say anything about dist_after[3] or dist_before[5].
+
+
+    The distance field is initialized with the default_dist value.
+    max_dist sets the maximum the maximum distance value.
+    """
+    raise NotImplementedError("Failing test. See GitHub issue #2.")
+    dist_after = np.full_like(spikes, default_dist, int)
+    dist_before = np.full_like(spikes, default_dist, int)
+    spike_indicies = (spikes == 1).nonzero()[0]
+    r = np.arange(0, len(spikes))
+    if spike_indicies is not None:
+        # after
+        endpoints = list(spike_indicies)
+        diff = np.diff(endpoints)
+        for idx in range(len(endpoints) - 1):
+            dist_after[endpoints[idx] : endpoints[idx + 1]] = r[0 : diff[idx]]
+        # before
+        endpoints = [-1] + list(spike_indicies)
+        diff = np.diff(endpoints)
+        for idx in range(len(endpoints) - 1):
+            dist_before[endpoints[idx] + 1 : endpoints[idx + 1] + 1] = np.flip(
+                r[0 : diff[idx]]
+            )
+    if max_dist:
+        dist_before = np.minimum(dist_before, max_dist)
+        dist_after = np.minimum(dist_after, max_dist)
+    return dist_before, dist_after
+
+
+def quick_inference_from_bi_df(
+    dist_before, dist_after, target_interval, threshold=0.1
+):
+    dist_before = dist_before[:, target_interval[0] : target_interval[1]]
+    dist_after = dist_after[:, target_interval[0] : target_interval[1]]
+    # match = torch.sum((dist_after < threshold) * (dist_before < threshold), dim=1)
+    match = torch.sum((dist_after < threshold), dim=1)
+    return match
+
+
+def count_inference_from_bi_df(
+    dist_before,
+    dist_after,
+    lhs_spike,
+    rhs_spike,
+    spike_pad,
+    target_interval,
+    max_num_spikes,
+):
+    raise NotImplementedError("TODO: fix broken tests. GitHub issue #1.")
+    if len(dist_before) != len(dist_after):
+        raise ValueError("dist_before and dist_after must be the same length.")
+    # A 1 element query must have r-l >= 2.
+    # l r
+    # 012
+    # |-|
+    num_elements = rhs_spike - lhs_spike - 1
+    if num_elements <= 0:
+        raise ValueError(
+            "Invalid query range ((lhs, rhs) = ({lhs_spike}, {rhs_spike}))."
+        )
+    if target_interval[0] < 0 or target_interval[1] > len(dist_before):
+        raise ValueError(
+            f"The query interval ({target_interval}) must be "
+            "within the range of the distance field "
+            f"(len: {len(dist_before)})."
+        )
+
+    init_a = max(0, lhs_spike + spike_pad + 1)
+    init_b = min(len(dist_before) - 1, rhs_spike - spike_pad - 1)
+    max_n = int(math.ceil((init_b - init_a) / (spike_pad + 1)))
+    max_n = min(max_n, max_num_spikes)
+    target_energy_by_n = torch.zeros(
+        (max_n + 1),
+    )  # np.zeros((max_n + 1,))
+
+    memo = {}
+    # range_cache = np.arange(0, rhs_spike - lhs_spike)
+    range_cache = torch.arange(
+        0,
+        rhs_spike - lhs_spike,
+        device=dist_before.device,
+    )
+    MemoKey = namedtuple("MemoKey", ["l_spike", "r_spike", "a", "b", "n"])
+
+    def energy_to_prob(e):
+        b = 1  # / len(dist_before)
+        return math.exp(b * -e)
+
+    def _energy(l_spike, r_spike, a, b, n):
+        print(f"l_spike: {l_spike}, r_spike: {r_spike}, a: {a}, b: {b}, n: {n}")
+        assert l_spike < a <= b < r_spike
+        assert n >= 0
+        key = MemoKey(l_spike, r_spike, a, b, n)
+        if key in memo:
+            # print('hit')
+            return memo[key]
+        ans = []
+        if n == 0:
+            dist_after_measured = range_cache[(a - l_spike) : (b - l_spike + 1)]
+            dist_before_measured = torch.flip(  # np.flip(
+                range_cache[(r_spike - b) : (r_spike - a) + 1], dims=(0,)
+            )
+            assert len(dist_after_measured) == len(dist_before_measured)
+            # dist_after_measured = torch.clip(dist_after_measured, 0, max_dist)
+            # dist_before_measured = torch.clip(dist_before_measured, 0, max_dist)
+            energy_forward = torch.sum(  # np.sum(
+                (dist_before[a : b + 1] - dist_before_measured) ** 2
+            )
+            energy_backward = torch.sum(  # np.sum(
+                (dist_after[a : b + 1] - dist_after_measured) ** 2
+            )
+            ans.append(energy_forward + energy_backward)
+            # energy_to_prob(energy_forward + energy_backward)
+        else:
+            assert n > 0
+            start = max(a, l_spike + spike_pad + 1)
+            # end *includes* the last valid index.
+            # with two spikes needing to be inserted, we need at least
+            # 2*(spike_pad+1) from the end.
+            end = min(b, r_spike - n * (spike_pad + 1))
+            if start > end:
+                return 0
+            for x in range(start, end + 1):
+                # energy_at_x = min(dist_after[x], max_dist) + min(
+                #    dist_before[x], max_dist
+                # )
+                energy_at_x = dist_after[x] + dist_before[x]
+                # prob_at_x = energy_to_prob(energy_at_x)
+                # prob_rhs = prob_lhs = 1
+                energy_rhs = energy_lhs = 0
+                if x > a:
+                    energy_lhs = _energy(l_spike, x, a, x - 1, n=0)
+                if x < b:
+                    energy_rhs = _energy(x, r_spike, x + 1, b, n=n - 1)
+                if x == b and n > 1:
+                    # Zero liklihood if there are too many n left to fit on rhs.
+                    energy_rhs = 0
+                event_energy = energy_at_x + energy_lhs + energy_rhs
+                ans.append(event_energy)
+        total_energy = torch.logsumexp(torch.Tensor(ans), dim=0)
+        # Save result
+        memo[key] = total_energy
+        # Check against target interval.
+        if a == target_interval[0] and b == target_interval[1] - 1:
+            target_energy_by_n[n] += ans
+        return ans
+
+    last_p = 0
+    for i in range(max_n + 1):
+        p = _energy(lhs_spike, rhs_spike, init_a, init_b, i)
+        print(f"i: {i}:\t p: {p}")
+        if p < last_p:
+            break
+        last_p = p
+    return torch.argmax(target_energy_by_n)  # np.argmax(target_energy_by_n)
 
 
 def count_inference_from_bi_df2(
@@ -364,121 +763,3 @@ def count_inference_from_bi_df2(
     # The actual answer is obtained by a simple argmax.
     res = torch.argmax(total_by_n, dim=1)
     return res
-
-
-def count_inference_from_bi_df(
-    dist_before,
-    dist_after,
-    lhs_spike,
-    rhs_spike,
-    spike_pad,
-    target_interval,
-    max_num_spikes,
-):
-    raise NotImplementedError("TODO: fix broken tests. GitHub issue #1.")
-    if len(dist_before) != len(dist_after):
-        raise ValueError("dist_before and dist_after must be the same length.")
-    # A 1 element query must have r-l >= 2.
-    # l r
-    # 012
-    # |-|
-    num_elements = rhs_spike - lhs_spike - 1
-    if num_elements <= 0:
-        raise ValueError(
-            "Invalid query range ((lhs, rhs) = ({lhs_spike}, {rhs_spike}))."
-        )
-    if target_interval[0] < 0 or target_interval[1] > len(dist_before):
-        raise ValueError(
-            f"The query interval ({target_interval}) must be "
-            "within the range of the distance field "
-            f"(len: {len(dist_before)})."
-        )
-
-    init_a = max(0, lhs_spike + spike_pad + 1)
-    init_b = min(len(dist_before) - 1, rhs_spike - spike_pad - 1)
-    max_n = int(math.ceil((init_b - init_a) / (spike_pad + 1)))
-    max_n = min(max_n, max_num_spikes)
-    target_energy_by_n = torch.zeros(
-        (max_n + 1),
-    )  # np.zeros((max_n + 1,))
-
-    memo = {}
-    # range_cache = np.arange(0, rhs_spike - lhs_spike)
-    range_cache = torch.arange(
-        0, rhs_spike - lhs_spike, device=dist_before.device,
-    )
-    MemoKey = namedtuple("MemoKey", ["l_spike", "r_spike", "a", "b", "n"])
-
-    def energy_to_prob(e):
-        b = 1  # / len(dist_before)
-        return math.exp(b * -e)
-
-    def _energy(l_spike, r_spike, a, b, n):
-        print(f"l_spike: {l_spike}, r_spike: {r_spike}, a: {a}, b: {b}, n: {n}")
-        assert l_spike < a <= b < r_spike
-        assert n >= 0
-        key = MemoKey(l_spike, r_spike, a, b, n)
-        if key in memo:
-            # print('hit')
-            return memo[key]
-        ans = []
-        if n == 0:
-            dist_after_measured = range_cache[(a - l_spike) : (b - l_spike + 1)]
-            dist_before_measured = torch.flip(  # np.flip(
-                range_cache[(r_spike - b) : (r_spike - a) + 1], dims=(0,)
-            )
-            assert len(dist_after_measured) == len(dist_before_measured)
-            # dist_after_measured = torch.clip(dist_after_measured, 0, max_dist)
-            # dist_before_measured = torch.clip(dist_before_measured, 0, max_dist)
-            energy_forward = torch.sum(  # np.sum(
-                (dist_before[a : b + 1] - dist_before_measured) ** 2
-            )
-            energy_backward = torch.sum(  # np.sum(
-                (dist_after[a : b + 1] - dist_after_measured) ** 2
-            )
-            ans.append(energy_forward + energy_backward)
-            # energy_to_prob(energy_forward + energy_backward)
-        else:
-            assert n > 0
-            start = max(a, l_spike + spike_pad + 1)
-            # end *includes* the last valid index.
-            # with two spikes needing to be inserted, we need at least
-            # 2*(spike_pad+1) from the end.
-            end = min(b, r_spike - n * (spike_pad + 1))
-            if start > end:
-                return 0
-            for x in range(start, end + 1):
-                # energy_at_x = min(dist_after[x], max_dist) + min(
-                #    dist_before[x], max_dist
-                # )
-                energy_at_x = dist_after[x] + dist_before[x]
-                # prob_at_x = energy_to_prob(energy_at_x)
-                # prob_rhs = prob_lhs = 1
-                energy_rhs = energy_lhs = 0
-                if x > a:
-                    energy_lhs = _energy(l_spike, x, a, x - 1, n=0)
-                if x < b:
-                    energy_rhs = _energy(x, r_spike, x + 1, b, n=n - 1)
-                if x == b and n > 1:
-                    # Zero liklihood if there are too many n left to fit on rhs.
-                    energy_rhs = 0
-                event_energy = energy_at_x + energy_lhs + energy_rhs
-                ans.append(event_energy)
-        total_energy = torch.logsumexp(torch.Tensor(ans), dim=0)
-        # Save result
-        memo[key] = total_energy
-        # Check against target interval.
-        if a == target_interval[0] and b == target_interval[1] - 1:
-            target_energy_by_n[n] += ans
-        return ans
-
-    last_p = 0
-    for i in range(max_n + 1):
-        p = _energy(lhs_spike, rhs_spike, init_a, init_b, i)
-        print(f"i: {i}:\t p: {p}")
-        if p < last_p:
-            break
-        last_p = p
-
-    return torch.argmax(target_energy_by_n)  # np.argmax(target_energy_by_n)
-
