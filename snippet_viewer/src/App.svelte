@@ -14,7 +14,7 @@
 
 //const DATA_PATH = './data/';
 //const DATA_PATH = './data_full/';
-const DATA_PATH = './data_pca/';
+const DATA_PATH = './Chicken_17_08_21_Phase_00/';
 const CLUSTER_ID_FILE = DATA_PATH + 'cluster_ids.json';
 
 let num_x_boxes = 30;
