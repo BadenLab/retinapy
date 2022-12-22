@@ -30,12 +30,12 @@ function draw_sample(sample, idx, width, ctx) {
 	ctx.strokeStyle = 'rgb(0, 0, 0)';
 	ctx.fillStyle = 'rgb(0, 0, 0)';
 
-	ctx.fillStyle = `rgb(${sample[2]*255}, 0, ${sample[2]*255})`;
+	ctx.fillStyle = `rgb(${sample[3]*255}, 0, ${sample[3]*255})`;
 	ctx.fillRect(...box);
 
-	const dr = 3;
+	const dr =  3;
 	const smaller_box = [box[0] + dr, box[1] + dr, box[2] - 2*dr, box[3] - 2*dr];
-	let rgb =  [sample[0]*250, sample[1]*240, sample[3]*210];
+	let rgb =  [sample[0]*250, sample[1]*240, sample[2]*210];
 	ctx.fillStyle = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`
 	ctx.fillRect(...smaller_box);
 }
