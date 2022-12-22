@@ -186,15 +186,20 @@ class DistFieldDataset(torch.utils.data.Dataset):
     # Mask value should be negative. Zero represents no spikes, and 1+ represent
     # a spike count which can be created than 1!
     MASK_VALUE = -1
+    MASK2_VALUE = -0.5
+    MASK3_VALUE = 10
     # Do not! set a seed within the dataset. Process forking leads to identical
     # seeds.
     # RNG_SEED = 123
 
     # TODO: make configurable
-    NOISE_SD = 0.1
+    NOISE_SD = 0.7
     NOISE_MU = 0
     NOISE_JITTER = 4
     DROP_RATE = 0.1
+    STIM_MASK_RATE = 0.0
+    SPIKE_MASK_RATE = 0.2
+    MIXUP_P = 0.4
 
     def __init__(
         self,
@@ -269,8 +274,9 @@ class DistFieldDataset(torch.utils.data.Dataset):
         # Per bin noise.
         max_length = stimulus.shape[1]
         center, length = np.random.randint(low=0, high=max_length, size=(2,))
-        left = max(0, center - length // 2)
-        right = min(max_length - 1, center + length // 2 + 1)
+        #left = max(0, center - length // 2)
+        #right = min(max_length - 1, center + length // 2 + 1)
+        left, right = (0, max_length - 1)
         bin_noise = np.random.normal(
             self.NOISE_MU,
             self.NOISE_SD,
@@ -278,6 +284,15 @@ class DistFieldDataset(torch.utils.data.Dataset):
         )
         stimulus = stimulus * scale + offset_noise
         stimulus[:, left:right] += bin_noise
+        # Mask some parts.
+        mask_indicies = np.nonzero(
+            np.random.binomial(1, p=self.STIM_MASK_RATE, size=len(stimulus))
+        )
+        stimulus[:, mask_indicies] = self.MASK3_VALUE
+        # Mixup
+        mix_idx = np.random.randint(0, len(self))
+        mixup = self.ds[mix_idx]['stimulus'][:, 0:stimulus.shape[1]]
+        stimulus = stimulus * (1 - self.MIXUP_P) + mixup * self.MIXUP_P
         return stimulus
 
     def normalize_stimulus(self, stimulus):
@@ -322,6 +337,11 @@ class DistFieldDataset(torch.utils.data.Dataset):
             1, p=(1 - self.DROP_RATE), size=len(spike_indicies)
         )
         spikes[spike_indicies] = new_spikes
+        # Mask some parts.
+        mask_indicies = np.nonzero(
+            np.random.binomial(1, p=self.SPIKE_MASK_RATE, size=len(spikes))
+        )
+        spikes[mask_indicies] = self.MASK2_VALUE
         return spikes
 
     def __getitem__(self, idx):
@@ -369,7 +389,7 @@ class DistFieldDataset(torch.utils.data.Dataset):
         # 5. Normalize
         stimulus_norm = self.normalize_stimulus(stimulus)
         # TODO: what about cheating? Why now?
-        # 6. Stack 
+        # 6. Stack
         snippet = np.vstack((stimulus_norm, spikes))
         # Returning a dictionary is more flexible than returning a tuple, as
         # we can add to the dictionary without breaking existing consumers of
