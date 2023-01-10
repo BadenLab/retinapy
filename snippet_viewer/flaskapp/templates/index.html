@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+
+{% block css %}
+{% endblock %}
+{% block js %}
+{% endblock %}
+
+{% block title %}Workspace{% endblock %}
+
+<!-- override jinja2 block -->
+{% block content %}
+<form class="create-workspace" action="/workspaces" method="POST">
+	<button type="submit">Create workspace</button>
+</form>
+{% endblock %}

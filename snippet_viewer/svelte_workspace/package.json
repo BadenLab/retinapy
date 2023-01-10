@@ -1,0 +1,38 @@
+{
+  "name": "svelte-app",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "rollup -c",
+    "dev": "rollup -c -w",
+    "start": "sirv public --no-clear"
+  },
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^17.0.0",
+    "@rollup/plugin-node-resolve": "^11.0.0",
+    "@rollup/plugin-replace": "^5.0.2",
+    "@rollup/plugin-typescript": "^10.0.1",
+    "@tsconfig/svelte": "^3.0.0",
+    "gl-vec2": "latest",
+    "rollup": "^2.3.4",
+    "rollup-plugin-css-only": "^3.1.0",
+    "rollup-plugin-livereload": "^2.0.0",
+    "rollup-plugin-svelte": "^7.0.0",
+    "rollup-plugin-terser": "^7.0.0",
+    "svelte": "^3.0.0",
+    "svelte-check": "^3.0.1",
+    "svelte-preprocess": "^5.0.0",
+    "typescript": "^4.9.4"
+  },
+  "dependencies": {
+    "pixi-viewport": "^4.38.0",
+    "pixi.js": "^6.5.8",
+    "plotly.js-dist-min": "^2.17.1",
+    "sirv-cli": "^2.0.0",
+    "tippy.js": "^6.3.7",
+    "tslib": "^2.4.1"
+  },
+  "peerDependencies": {
+    "@pixi/math-extras": "^6.5.8"
+  }
+}

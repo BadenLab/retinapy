@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block css %}
+<link rel='stylesheet' href='/static/ws_build/bundle.css'>
+{% endblock %}
+{% block js %}
+<script defer src='/static/ws_build/bundle.js'></script>
+<script>
+	var workspace_id = {{workspace_id}};
+
+	window.onload = () => {
+		let title_input = document.getElementById("workspace_title");
+		title_input.onkeydown = (event) => {
+			if (event.key == 'Enter') {
+				event.preventDefault()
+				title_input.blur();
+			}
+		};
+		title_input.onblur = () => {
+			let form_data = new FormData();
+			form_data.append('title', title_input.innerText);
+			fetch(`/workspaces/${workspace_id}`, {
+				method: "PATCH",
+				body: form_data
+			}).then()
+		};
+	};
+
+</script>
+{% endblock %}
+
+{% block title %}Workspace{% endblock %}
+
+<!-- override jinja2 block -->
+{% block content %}
+<h2 id="workspace_title" contenteditable="true">{{ workspace_title }}</h2>
+<div id="svelte-app"></div>
+{% endblock %}

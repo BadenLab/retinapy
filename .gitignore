@@ -28,14 +28,15 @@ __pycache__/
 .ipynb_checkpoints/
 
 # Svelte web app
-/snippet_viewer/node_modules
-/snippet_viewer/public/build
-/snippet_viewer/public/data_full/
-/snippet_viewer/public/data_pca/
-/snippet_viewer/public/data_pca2/
-/snippet_viewer/data
+/snippet_viewer/resources
+/snippet_viewer/instance
+node_modules/
+public/build
+/snippet_viewer/flaskapp/static/classic_build
+/snippet_viewer/flaskapp/static/s_build
+/snippet_viewer/flaskapp/static/kernel_plots/
+/snippet_viewer/flaskapp/static/kernel_plots_tooltip/
 
-/prediction_viewer/node_modules
 /prediction_viewer/build
 /prediction_viewer/.svelte-kit
 /prediction_viewer/package

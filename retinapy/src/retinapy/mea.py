@@ -37,9 +37,17 @@ REC_IDS_FILENAME = "recording_ids.json"
 REC_CLUSTER_IDS_FILENAME = "recording_cluster_ids.json"
 
 
+RecClusterId: TypeAlias = Tuple[str, int]
+# A dictionary, recording-name <-> id
+RecIds: TypeAlias = bidict.BidirectionalMapping[str, int]
+# A dictionary, (recording-name, cluster_id) <-> global cluster id
+RecClusterIds: TypeAlias = bidict.BidirectionalMapping[RecClusterId, int]
+
 Stimulus = namedtuple(
     "Stimulus", ["name", "wavelength", "channel", "display_hex", "import_name"]
 )
+
+
 stimuli = [
     Stimulus("red", 680, 0, "#FE7C7C", "/Red_Noise"),
     Stimulus("green", 530, 1, "#8AFE7C", "/Green_Noise"),
@@ -92,6 +100,7 @@ class CompressedSpikeRecording:
         cluster_ids: List[int],
         sensor_sample_rate: float,
         num_sensor_samples: int,
+        cluster_gid_map: Optional[RecClusterIds] = None,
     ):
         if len(spike_events) != len(cluster_ids):
             raise ValueError(
@@ -106,6 +115,7 @@ class CompressedSpikeRecording:
         self.spike_events = spike_events
         self.sensor_sample_rate = sensor_sample_rate
         self.num_sensor_samples = num_sensor_samples
+        self.cluster_gid_map = cluster_gid_map
 
     def __str__(self):
         res = (
@@ -179,6 +189,14 @@ class CompressedSpikeRecording:
                 matching_clusters.add(self.cluster_ids[i])
         return self.clusters(matching_clusters)
 
+    def cid_to_gid(self, cid: int) -> int:
+        if self.cluster_gid_map is None:
+            return cid
+        return self.cluster_gid_map[cid]
+
+    def cid_to_idx(self, cid: int) -> int:
+        return self.cluster_ids.index(cid)
+
 
 class SpikeRecording:
     """
@@ -207,7 +225,15 @@ class SpikeRecording:
           Pandas and PyTorch.
     """
 
-    def __init__(self, name, stimulus, spikes, cluster_ids, sample_rate):
+    def __init__(
+        self,
+        name,
+        stimulus,
+        spikes,
+        cluster_ids,
+        sample_rate,
+        cluster_gid_map: Optional[RecClusterIds] = None,
+    ):
         if len(stimulus) != len(spikes):
             raise ValueError(
                 f"Length of stimulus ({len(stimulus)}) and length"
@@ -224,6 +250,7 @@ class SpikeRecording:
         self.spikes = spikes
         self.cluster_ids = cluster_ids
         self.sample_rate = sample_rate
+        self.cluster_gid_map = cluster_gid_map
 
     def __str__(self):
         res = (
@@ -271,6 +298,7 @@ class SpikeRecording:
             self.spikes[:, cluster_indices],
             list(cluster_ids),
             self.sample_rate,
+            self.cluster_gid_map,
         )
 
     def extend(self, recording):
@@ -299,7 +327,16 @@ class SpikeRecording:
         self.spikes = np.concatenate((self.spikes, recording.spikes))
         return self
 
-    def spike_snippets(self, total_len: int, post_spike_len: int):
+    def spike_snippets(self, cid: int, total_len: int, post_spike_len: int):
+        res = spike_snippets(
+            self.stimulus,
+            compress_spikes(self.spikes[:, self.cluster_ids.index(cid)]),
+            total_len,
+            post_spike_len,
+        )
+        return res
+
+    def all_spike_snippets(self, total_len: int, post_spike_len: int):
         snippets_by_cluster = {}
         # Can this be done in a single call?
         # Could make compress_spikes operate on 2d array, then sent all
@@ -312,6 +349,13 @@ class SpikeRecording:
                 post_spike_len,
             )
         return snippets_by_cluster
+
+    def cidx_to_gid(self, cidx: int) -> int:
+        cid = self.cluster_ids(cidx)
+        if self.cluster_gid_map is None:
+            return cid
+        else:
+            return self.cluster_gid_map[cid]
 
 
 def split(recording: SpikeRecording, split_ratio: Sequence[int]):
@@ -530,8 +574,7 @@ def _load_data_files(data_dir: pathlib.Path):
 
 
 def _rec_cluster_ids(recs: Iterable[CompressedSpikeRecording]):
-    """Create a rec_name -> cluster_id -> ID mapping.
-    """
+    """Create a rec_name -> cluster_id -> ID mapping."""
     res = {}
     tally = 0
     for r in recs:
@@ -553,14 +596,15 @@ def save_id_info(
         2. recording-name -> cluster-id -> ID.
 
     The purpose of the loading and saving of id information is to maintain a
-    consistent way of referring to recordings and clusters. 
+    consistent way of referring to recordings and clusters.
     An example of where this is needed is when training a multi-cluster model
-    on a subset of the data. This subset could have been selected manually 
+    on a subset of the data. This subset could have been selected manually
     and/or automatically by the filtering proceedure that removes unsuitable
-    clusters, such as those with too few spikes. It is important to be able to 
-    obtain the embeddings for the clusters that were trained on, but not the 
+    clusters, such as those with too few spikes. It is important to be able to
+    obtain the embeddings for the clusters that were trained on, but not the
     ones that were not. Without a global ID, a snapshot of the data along with
-    the filtering routine used while training would be needed. 
+    the filtering routine used while training would be needed.
+    given to the cell data by the spike sorter is also not app
     """
     data_dir = pathlib.Path(data_dir)
     _assert_dir_exists(data_dir)
@@ -569,13 +613,6 @@ def save_id_info(
     recs = sorted(recs, key=lambda r: rec_id_map[r.name])
     with open(data_dir / REC_CLUSTER_IDS_FILENAME, "w") as f:
         json.dump(_rec_cluster_ids(recs), f)
-
-
-RecClusterId : TypeAlias = Tuple[str, int]
-# A dictionary, recording-name <-> id
-RecIds: TypeAlias = bidict.BidirectionalMapping[str, int]
-# A dictionary, (recording-name, cluster_id) <-> another cluster id
-RecClusterIds: TypeAlias = bidict.BidirectionalMapping[RecClusterId, int]
 
 
 def load_id_info(data_dir: pathlib.Path | str) -> Tuple[RecIds, RecClusterIds]:
@@ -601,7 +638,7 @@ def load_id_info(data_dir: pathlib.Path | str) -> Tuple[RecIds, RecClusterIds]:
     flat_rec_cluster_ids = bidict.bidict()
     for r_name, d1 in rec_cluster_ids.items():
         for c_id, c_id_flat in d1.items():
-            # Don't forget to convert c_id to int. It became a string as 
+            # Don't forget to convert c_id to int. It became a string as
             # JSON only allows string dictionary keys.
             c_id = int(c_id)
             assert type(c_id) == type(c_id_flat) == int

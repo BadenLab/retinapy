@@ -80,7 +80,7 @@ RUN pip install \
 		build \
 		twine \
 		h5py \
-        opencv-python \
+		opencv-python \
 		pandas \
 		jupyterlab \
 		ipywidgets  \
@@ -92,7 +92,7 @@ RUN pip install \
 		scipy \
 		plotly \
 		scikit-learn \
-        icecream \
+		icecream \
 		bidict \ 
 		einops \
 		ipympl \
@@ -105,6 +105,9 @@ RUN pip install \
 		semantic_version \
 		dash \
 		scinot \
+		flask \
+		flask-sqlalchemy \
+		polars \
 		mypy
 
 RUN conda install --yes -c conda-forge nodejs'>=12.12.0'
@@ -115,6 +118,8 @@ COPY --chown=$USER tools/jupyter_notebook_config.py /etc/jupyter/
 # This file was found by diffing a container running jupyterlab that had 
 # extensions manually enabled.
 COPY --chown=$USER tools/plugin.jupyterlab-settings /home/$USER/.jupyter/lab/user-settings/@jupyterlab/extensionmanager-extension/
+# Keyboard shortcuts
+COPY --chown=$USER tools/shortcuts.jupyterlab-settings /home/$USER/.jupyter/lab/user-settings/@jupyterlab/shortcuts-extension/
 # Getting some permission errors printed in terminal after running Jupyter Lab, 
 # and trying the below line to fix:
 RUN chown -R $USER:$USER /home/$USER/.jupyter

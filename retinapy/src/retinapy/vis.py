@@ -72,6 +72,7 @@ def kernel(
     t_0: int,
     bin_duration_ms,
     vline: Optional[int] = None,
+    line_width: float = 2.0,
 ):
     """
     Args:
@@ -84,7 +85,7 @@ def kernel(
     if vline is not None:
         fig.add_vline(
             x=-100,
-            line_width=2,
+            line_width=line_width,
             line_dash="dot",
             line_color="grey",
             annotation_text="-100ms",
@@ -153,7 +154,7 @@ class KernelPlots:
 
     @staticmethod
     def _generate_single(
-        ds_rec, c_idx, snippet_len, snippet_pad, mini, out_dir
+        ds_rec, c_idx, snippet_len, snippet_pad, style, out_dir
     ):
         snippets = mea.spike_snippets(
             ds_rec.stimulus,
@@ -168,8 +169,12 @@ class KernelPlots:
         # Make figure.
         bin_duration_ms = 1000 / ds_rec.sample_rate
         t_0 = snippet_len - snippet_pad
-        fig = kernel(ker, t_0=t_0, bin_duration_ms=bin_duration_ms)
-        if mini:
+        # Use thicker lines for the no-text version.
+        line_width = 4 if style == 'no-text' else 2
+        # Create the kernel.
+        fig = kernel(ker, t_0=t_0, bin_duration_ms=bin_duration_ms,
+                     line_width=line_width)
+        if style =='mini':
             fig.update_layout(
                 {
                     "yaxis": {"visible": False},
@@ -184,6 +189,19 @@ class KernelPlots:
                     },
                     "width": 200,
                     "height": 200,
+                    "margin": {"l": 0},
+                }
+            )
+        elif style == 'no-text':
+            fig.update_layout(
+                {
+                    # Slightly narrower y-axis.
+                    "yaxis": {"visible": False, "range": [0.15, 0.75]},
+                    "xaxis": {"visible": False, "title": None},
+                    "title": None,
+                    "width": 200,
+                    "height": 200,
+                    "margin": {"l": 0, "r": 0, "t": 0, "pad": 0},
                 }
             )
         else:
@@ -212,7 +230,8 @@ class KernelPlots:
         snippet_len: int,
         snippet_pad: int,
         out_dir: Union[str, pathlib.Path],
-        mini=False,
+        style='normal', # normal, mini, no-text
+        include_text=True,
         num_workers=4,
     ) -> "KernelPlots":
         """
@@ -221,7 +240,7 @@ class KernelPlots:
             snippet_len: The length of the snippet to use for the kernel.
             snippet_pad: The number of padding bins to use after the spike.
             out_dir: The directory to save the plots to.
-            mini: If True, make the plots smaller by removing axes and making
+            style: if 'mini' make the plots smaller by removing axes and making
                 the images smaller.
         """
         # Create outer directory.
@@ -241,7 +260,7 @@ class KernelPlots:
                 cls._generate_single,
                 snippet_len=snippet_len,
                 snippet_pad=snippet_pad,
-                mini=mini,
+                style=style,
                 out_dir=out_dir,
             )
             futures = {}

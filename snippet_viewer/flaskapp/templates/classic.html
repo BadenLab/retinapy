@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+
+{% block css %}
+<link rel='stylesheet' href='/static/classic_build/bundle.css'>
+{% endblock %}
+{% block js %}
+<script defer src='/static/classic_build/bundle.js'></script>
+{% endblock %}
+
+{% block title %}Classic{% endblock %}
+
+<!-- override jinja2 block -->
+{% block content %}
+<div id="svelte-app"></div>
+{% endblock %}
