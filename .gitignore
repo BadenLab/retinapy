@@ -31,9 +31,9 @@ __pycache__/
 /snippet_viewer/resources
 /snippet_viewer/instance
 node_modules/
-public/build
-/snippet_viewer/flaskapp/static/classic_build
-/snippet_viewer/flaskapp/static/s_build
+**/public/build
+/snippet_viewer/flaskapp/static/classic_build/
+/snippet_viewer/flaskapp/static/ws_build/
 /snippet_viewer/flaskapp/static/kernel_plots/
 /snippet_viewer/flaskapp/static/kernel_plots_tooltip/
 
