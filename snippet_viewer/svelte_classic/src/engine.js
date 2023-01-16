@@ -1,4 +1,4 @@
-mport { getContext, onMount, onDestroy } from 'svelte';
+import { getContext, onMount, onDestroy } from 'svelte';
 import { writable, derived, readable, get } from 'svelte/store';
 
 // Some props for the app

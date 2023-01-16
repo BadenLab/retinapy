@@ -9,8 +9,8 @@ import numpy.typing as npt
 import plotly
 
 
-DATA_DIR = "../resources/ff_noise_recordings"
-CACHE_DIR = "../resources/snippets"
+DATA_DIR = "./resources/ff_noise_recordings"
+CACHE_DIR = "./resources/snippets"
 DEFAULT_DOWNSAMPLE = 180
 
 """
@@ -166,7 +166,7 @@ def create_kernel(rec_id: int):
     kernel_fig = retinapy.vis.kernel(
         kernel,
         t_0=(snippet_len - snippet_pad),
-        bin_duration_ms=recs_by_id[rec_id].sensor_sample_rate * downsample * 1000,
+        bin_duration_ms=1000 * (downsample / recs_by_id[rec_id].sensor_sample_rate),
     )
     res = json.dumps(kernel_fig, cls=plotly.utils.PlotlyJSONEncoder)
     return res
@@ -203,7 +203,7 @@ def merged_kernel(rec_id: int):
     kernel_fig = retinapy.vis.kernel(
         ave_kernel,
         t_0=(snippet_len - snippet_pad),
-        bin_duration_ms=recs_by_id[rec_id].sensor_sample_rate / downsample,
+        bin_duration_ms=1000 * (downsample / recs_by_id[rec_id].sensor_sample_rate),
     )
     res = json.dumps(kernel_fig, cls=plotly.utils.PlotlyJSONEncoder)
     return res
