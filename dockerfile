@@ -1,8 +1,5 @@
 FROM nvidia/cuda:11.7.1-cudnn8-devel-ubuntu20.04
-#FROM pytorch/pytorch:latest
 
-# I edit the nvimrc too often for it to be a base image.
-# FROM nvimi
 ARG USER_ID=1001
 ARG GROUP_ID=101
 ARG USER=app
@@ -108,6 +105,8 @@ RUN pip install \
 		flask \
 		flask-sqlalchemy \
 		polars \
+		scikit-image \
+		moviepy \
 		mypy
 
 RUN conda install --yes -c conda-forge nodejs'>=12.12.0'
@@ -124,12 +123,7 @@ COPY --chown=$USER tools/shortcuts.jupyterlab-settings /home/$USER/.jupyter/lab/
 # and trying the below line to fix:
 RUN chown -R $USER:$USER /home/$USER/.jupyter
 
-
 RUN jupyter lab build # needed for Dash. Very annoying. Takes ages.
-
-
-RUN pip install scikit-image moviepy
-
 
 USER root
 # In order to allow the Python package to be edited without
