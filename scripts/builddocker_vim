@@ -1,7 +1,0 @@
-#!/bin/bash
-# Copy nvim config to build context.
-cp -r /home/k/Dropbox/projects/linux_setup/configs/home/k/.config/nvim/ ./tools/nvim
-
-docker build -t csi \
-	--build-arg USER_ID=$(id -u) \
-	--build-arg GROUP_ID=$(id -g) ./
