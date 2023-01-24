@@ -9,27 +9,28 @@ import Plotly from 'plotly.js-dist-min';
 
 
 let recordingId = 0;
-let clusterIds = [];
+let cellIds = [];
 let tippyTooltips = [];
+let cellSelectMode = "all";  // ["all", "first", "allButFirst"]
 let aveKernel = null;
 
-function updateClusterIds() {
+function updateCellIds() {
 	// First, remove tooltips.
 	//removeTooltips();
 	fetch(`/api/recording/${recordingId}/cells`)
 		.then((response) => response.json())
 		.then( cIds => {
 		cIds.sort((a,b) => a - b);
-		clusterIds = cIds;
+		cellIds = cIds;
 	});
 }
 
 function addToolTips() {
     tick().then(() => {
-		const clusterButtons = document.querySelectorAll('.cluster_button');
+		const cellButtons = document.querySelectorAll('.cell_button');
 		console.log("adding tippy");
-		for(let i = 0; i < clusterButtons.length; i++) {
-			const element = clusterButtons[i];
+		for(let i = 0; i < cellButtons.length; i++) {
+			const element = cellButtons[i];
 			const cellId = parseInt(element.innerHTML);
 			// First, remove existing tooltip
 			if(element._tippy) {
@@ -80,6 +81,7 @@ function comparisonPlot(group1 : GroupSelectData, group2 : GroupSelectData,
 function singlePlot(group : GroupSelectData, divElement : HTMLElement) {
 	fetchKernel(group.spikes).then((fig) => {
 		clearKernelPlots();
+		fig.layout.title.text = "Snippet average";
 		Plotly.newPlot(divElement, fig.data, fig.layout);
 	});
 }
@@ -126,6 +128,7 @@ function avePlot(groups : GroupSelectData[], divElement : HTMLElement) {
 		return;
 	}
 	fetchMergedKernel(spikes).then((fig) => {
+		fig.layout.title.text = "Snippet average";
 		Plotly.purge(divElement);
 		Plotly.newPlot(divElement, fig.data, fig.layout);
 	});
@@ -148,8 +151,8 @@ groupSelection.subscribe( (groups : GroupSelectData[]) => {
 	}
 });
 
-$: recordingId, updateClusterIds();
-$: clusterIds, addToolTips();
+$: recordingId, updateCellIds();
+$: cellIds, addToolTips();
 
 
 let _pause = false
@@ -172,15 +175,31 @@ engine.pauseCtrl.subscribe(value => {
 		{/await}
 	</select>
 </ul>
-<h3>Clusters</h3>
-<div class="clusters">
-	{#each clusterIds as cId}
-		<div class="cluster_box">
+<h3>Cells</h3>
+<div class="cells">
+
+<div class="cell-options">
+<fieldset>
+<legend>Select mode:</legend>
+<label>
+<input type=radio bind:group={cellSelectMode} name="cellSelectMode" value="all" />
+All
+</label>
+<label><input type=radio bind:group={cellSelectMode} name="cellSelectMode" value="first" />
+First
+</label>
+<label><input type=radio bind:group={cellSelectMode} name="cellSelectMode" value="allButFirst" />
+All but first
+</label>
+</fieldset>
+</div>
+
+	{#each cellIds as cId}
+		<div class="cell_box">
 			<button
-				class="cluster_button"
-				on:click={() => engine.addCellAsGroup(recordingId, cId)}
-				>{cId}</button
-			>
+				class="cell_button"
+				on:click={() => engine.addCellAsGroup(recordingId, cId, cellSelectMode)}
+				>{cId}</button>
 		</div>
 	{/each}
 </div>
@@ -202,7 +221,7 @@ engine.pauseCtrl.subscribe(value => {
 		padding: 0;
 	}
 
-	div.cluster_box {
+	div.cell_box {
 		display: inline-block;
 		padding: 5px 4px 5px 4px;
 		text-align: center;
@@ -211,12 +230,12 @@ engine.pauseCtrl.subscribe(value => {
 		margin: 2px;
 	}
 
-	div.cluster_box button {
+	div.cell_box button {
 		width: 50px;
 		margin-bottom: 0;
 	}
 
-	div.clusters {
+	div.cells {
 		margin-bottom: 1rem;
 	}
 
@@ -242,5 +261,10 @@ engine.pauseCtrl.subscribe(value => {
 	#kernelplots div.halfwidth {
 		width: 50%;
 		display: inline-block;
+	}
+
+	/* Add horizontal padding between radio buttons */
+	.cell-options input {
+		margin-left: 1rem;
 	}
 </style>

@@ -2,6 +2,7 @@
 	import * as PIXI from "pixi.js";
 	import { Viewport } from "pixi-viewport";
 	import { onMount } from "svelte";
+	import SnippetsContextMenu from "./SnippetsContextMenu.svelte";
 	import {
 		width,
 		height,
@@ -12,13 +13,18 @@
 		props,
 		playbackTime,
 		updateClock,
+		Workspace,
 	} from "./engine.js";
 
 	let canvas: HTMLCanvasElement;
 	let pixiApp: PIXI.Application;
 	let viewport: Viewport;
+	let workspace: Workspace; 
 
 	onMount(() => {
+		// Disable context menu.
+		canvas.oncontextmenu = (e) => e.preventDefault();
+
 		pixiApp = new PIXI.Application({
 			view: canvas,
 			// Need to manually resize, so that we can resize the viewport also, however
@@ -64,7 +70,7 @@
 		// sure which is the best, but I'm leaning towards restricting it to the
 		// screen.
 		pixiApp.stage.hitArea = pixiApp.screen;
-		startEngine(canvas, pixiApp, viewport);
+		workspace = startEngine(canvas, pixiApp, viewport);
 		// add a red box
 		/*const sprite = viewport.addChild(new PIXI.Sprite(PIXI.Texture.WHITE))
 	sprite.tint = 0xff0000
@@ -94,6 +100,7 @@
 	}
 </script>
 
+<SnippetsContextMenu />
 <canvas
 	bind:this={canvas}
 	width={$width * $pixelRatio}

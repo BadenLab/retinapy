@@ -10,8 +10,13 @@ import plotly
 
 
 DATA_DIR = "./resources/ff_noise_recordings"
+KERNEL_DIR = "chicken_kernel_plots_tooltip"
+#DATA_DIR = "./resources/frog_ff_noise"
+#KERNEL_DIR = "frog_kernel_plots_tooltip"
 CACHE_DIR = "./resources/snippets"
 DEFAULT_DOWNSAMPLE = 180
+#DEFAULT_KERNEL_LEN_MS = 1100 # ms
+#DEFAULT_KERNEL_PAD_MS = 100 # ms
 
 """
 TODO: use caching instead.
@@ -90,7 +95,8 @@ def cells(rec_id):
 def kernelplot_tooltip(rec_id, cell_id):
     rec = recs_by_id[rec_id]
     # Serve from static.
-    path = f"kernel_plots_tooltip/{rec.name}_c{cell_id}.png"
+    # path = f"kernel_plots_tooltip/{rec.name}_c{cell_id}.png"
+    path = f"{KERNEL_DIR}/{rec.name}_c{cell_id}.png"
     return flask.send_from_directory("static", path)
 
 
@@ -104,10 +110,36 @@ def cell(rec_id, cell_id):
     return res
 
 
+def filter_spikes(spikes, min_dist):
+    if len(spikes) == 0:
+        return spikes
+    first = [spikes[0]]
+    other = []
+    for idx in range(1, len(spikes)):
+        if spikes[idx] - spikes[idx - 1] < min_dist:
+            other.append(spikes[idx])
+        else:
+            first.append(spikes[idx])
+    return first, other
+
+
 @bp.get("/recording/<int:rec_id>/cell/<int:cell_id>/spikes")
 def cell_spikes(rec_id, cell_id):
-    downsample = flask.request.args.get("downsample")
-    downsample = int(downsample) if downsample else DEFAULT_DOWNSAMPLE
+    downsample = flask.request.args.get(
+        "downsample", default=DEFAULT_DOWNSAMPLE, type=int
+    )
+    min_dist = flask.request.args.get("mindist")
+    mode = flask.request.args.get("mode", default="all", type=str)
+    match mode:
+        case "all":
+            if min_dist is not None:
+                raise ValueError("mindist not supported for mode=all")
+        case "first":
+            if min_dist is None:
+                raise ValueError("mindist must be specified for mode=first")
+        case "allButFirst":
+            if min_dist is None:
+                raise ValueError("mindist must be specified for mode=allButFirst")
 
     if not rec_id in recs_by_id:
         return "Invalid recording id", 400
@@ -116,8 +148,16 @@ def cell_spikes(rec_id, cell_id):
     rec = recs_by_id[rec_id]
     cell_idx = rec.cid_to_idx(cell_id)
     spikes = rec.spike_events[cell_idx]
-    spikes = mea.rebin_spikes(spikes, downsample)
-    res = json.dumps(spikes.tolist())
+    spikes = mea.rebin_spikes(spikes, downsample).tolist()
+    if min_dist:
+        min_dist = int(min_dist)
+        first_spikes, other_spikes = filter_spikes(spikes, min_dist)
+        assert mode != "all"
+        if mode == "first":
+            spikes = first_spikes
+        elif mode == "allButFirst":
+            spikes = other_spikes
+    res = json.dumps(spikes)
     return res
 
 
@@ -166,7 +206,8 @@ def create_kernel(rec_id: int):
     kernel_fig = retinapy.vis.kernel(
         kernel,
         t_0=(snippet_len - snippet_pad),
-        bin_duration_ms=1000 * (downsample / recs_by_id[rec_id].sensor_sample_rate),
+        bin_duration_ms=1000
+        * (downsample / recs_by_id[rec_id].sensor_sample_rate),
     )
     res = json.dumps(kernel_fig, cls=plotly.utils.PlotlyJSONEncoder)
     return res
@@ -203,7 +244,8 @@ def merged_kernel(rec_id: int):
     kernel_fig = retinapy.vis.kernel(
         ave_kernel,
         t_0=(snippet_len - snippet_pad),
-        bin_duration_ms=1000 * (downsample / recs_by_id[rec_id].sensor_sample_rate),
+        bin_duration_ms=1000
+        * (downsample / recs_by_id[rec_id].sensor_sample_rate),
     )
     res = json.dumps(kernel_fig, cls=plotly.utils.PlotlyJSONEncoder)
     return res

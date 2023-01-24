@@ -3,6 +3,7 @@ import * as PIXI from 'pixi.js';
 // math extras for easy point manipulation, like point.subtract(other)
 import '@pixi/math-extras';
 import type {Viewport} from 'pixi-viewport';
+import * as colorutils from './color.js';
 
 
 let _playbackSpeed = 0.05;
@@ -22,6 +23,8 @@ export const pixelRatio: any = writable(window.devicePixelRatio);
 export const context = writable();
 export const canvas = writable();
 export const playbackTime = writable(0);
+// Selection mode: group or snippet
+export const selectionMode = writable('group');
 /* A read-only store that is internally tied to playbackTime. 
 
 There are many objects that only want to be updated when the snippet
@@ -115,13 +118,6 @@ export const props = deriveObject({
 });
 
 
-/**
-	input is [0, 1] values.
-*/
-function rgbToNumeric(r: number, g: number, b: number): number {
-	const res = (r * 255 << 16) + (g * 255 << 8) + (b * 255 | 0);
-	return res;
-}
 
 function absSnippetIdx(spikeIdx: number, snippetIdx: number): number {
 	const res = spikeIdx - (_snippetLen - _snippetPad) + snippetIdx;
@@ -302,18 +298,23 @@ interface DropReceiver {
  * so as avoid needing to clean up references to these objects if they are
  * removed from the scene.
  */
-class SelectionManager<SelectableT extends Selectable> {
+export class SelectionManager<SelectableT extends Selectable> {
 	static DOUBLE_CLICK_MS = 300;
 	positionParent: PIXI.Container;
 	canvas: HTMLCanvasElement;
 	mimetype: string;
 
-	// We will need this eventually, to manage references better and not have
+	// We might need this eventually, to manage references better and not have
 	// references stuck in ananymous functions that can't be deleted.
 	// selectables: SelectableT[] = [];
+	// If we have references to selectables, what happens on delete? Who is 
+	// responsible for telling the selection manager to remove the item?
+	// I think I prefer the idea that the selection manager avoids storing too
+	// much state, and the objects like Workspace hold it instead.
 	selected: SelectableT[] = [];
 	dragTargets: DragTarget[] = [];
 	focused: SelectableT = null;
+	isContextMenu: boolean = false;
 	dropReceivers: DropReceiver[] = [];
 	dragStartPosition: PIXI.Point = null;
 	dragObjStarts: PIXI.Point[] = [];
@@ -327,6 +328,9 @@ class SelectionManager<SelectableT extends Selectable> {
 	_onDoubleClick: (s: SelectableT) => void = () => {};
 	_onPreDoubleClick: (s: SelectableT) => void = () => {};
 	_onDoubleSelectLeave: (s: SelectableT) => void = () => {};
+	// Callback that shows a context menu. Must return a destroy function.
+	_onContextMenuShow: (event: PIXI.InteractionEvent, s: SelectableT[]) => (() => void) = () => {return () => {};};
+	_onContextMenuHide: () => void = () => {};
 	unsubscribes: (() => void)[] = [];
 	dragUnsubscribes: (() => void)[] = [];
 	onSelectUnsubscribes: (() => void)[] = [];
@@ -343,14 +347,18 @@ class SelectionManager<SelectableT extends Selectable> {
 		this.positionParent = positionParent;
 		this.mimetype = mimetype;
 		this.canvas = canvas;
+		this.setupParentAndCanvasListeners();
 	}
 
 	/**
 	 * Called after the selection becomes non-empty.
 	 */
-	addOnSelectListeners() {
+	setupParentAndCanvasListeners() {
+		console.log('setup parent and canvas listeners');
 		const onKeyDown = (event: KeyboardEvent) => {
 			// Delete any selected items.
+			console.log('selection manager, on key down');
+			console.log(`event.code: ${event.code}`);
 			if (event.code === 'Delete') {
 				// Delete selected groups.
 				for (let i = 0; i < this.selected.length; i++) {
@@ -365,15 +373,21 @@ class SelectionManager<SelectableT extends Selectable> {
 		 *	- This callback will only be called if another object doesn't 
 		 *		handle the event. Thus, we can safely clear selection here.  
 		 */
-		const onPointerDownOutside = (event: PIXI.InteractionEvent) => {
-			// Only clear on left or middle click (right and middle shouldn't clear).
-			console.log('pointer down outside');
-			if (event.data.button === 0) {
-				this.clearSelection();
+		const onPointerDownInParent = (event: PIXI.InteractionEvent) => {
+			console.log('pointer down in position parent');
+			if (event.data.button == 2) {
+				this.showContextMenu(event);
+			}
+			else {
+				this.hideContextMenu();
+				if (event.data.button === 0) {
+					// Only clear on left (right and middle shouldn't clear).
+					this.clearSelection();
+				}
 			}
 		};
 
-		this.positionParent.on('pointerdown', onPointerDownOutside);
+		this.positionParent.on('pointerdown', onPointerDownInParent);
 		window.addEventListener('keydown', onKeyDown);
 		const onLeaveCanvas = () => {
 			window.removeEventListener('keydown', onKeyDown);
@@ -384,8 +398,8 @@ class SelectionManager<SelectableT extends Selectable> {
 		this.canvas.addEventListener('mouseleave', onLeaveCanvas);
 		this.canvas.addEventListener('mouseenter', onEnterCanvas);
 
-		this.onSelectUnsubscribes.push(() => {
-			this.positionParent.off('pointerdown', onPointerDownOutside);
+		this.unsubscribes.push(() => {
+			this.positionParent.off('pointerdown', onPointerDownInParent);
 			this.canvas.removeEventListener('mouseleave', onLeaveCanvas);
 			this.canvas.removeEventListener('mouseenter', onEnterCanvas);
 			window.removeEventListener('keydown', onKeyDown);
@@ -404,6 +418,8 @@ class SelectionManager<SelectableT extends Selectable> {
 		for (const unsub of unsubs) {
 			unsub();
 		}
+		// Hide context menu.
+		this._onContextMenuHide();
 		this.selected = [];
 		this.dragStartPosition = null;
 		this.dragObjStarts = [];
@@ -441,6 +457,10 @@ class SelectionManager<SelectableT extends Selectable> {
 		this._onDoubleClick = f;
 	}
 
+	onContextMenu(f: (s: SelectableT[]) => void) {
+		this._onContextMenu = f;
+	}
+
 	onPreDoubleClick(f: (s: SelectableT) => void) {
 		this._onPreDoubleClick = f;
 	}
@@ -471,10 +491,6 @@ class SelectionManager<SelectableT extends Selectable> {
 		// Only one type of object is selectable at a time (group or snippet).
 		let dirty = false;
 		const add = (s: SelectableT) => {
-			const wasSelectionEmpty = this.selected.length === 0;
-			if (wasSelectionEmpty) {
-				this.addOnSelectListeners();
-			}
 			this.selected.push(s);
 			s.setSelectState(SelectState.Selected);
 			dirty = true;
@@ -529,8 +545,33 @@ class SelectionManager<SelectableT extends Selectable> {
 	}
 
 	/**
-		Clear selection, leaving an optional item still selected.
-	*/
+	 * Set selection programatically.
+	 */
+	setSelection(toSelect: SelectableT[]) {
+		console.log("setSelection", toSelect);
+		// We need two-way comparison to see if anything should be done.
+		const toSelectSet = new Set(toSelect);
+		const selectedSet = new Set(this.selected);
+		const setEq = (setX, setY) => {
+			const res = setX.size === setY.size &&
+				[...setX].every((x) => setY.has(x));
+			return res;
+		};
+		if (setEq(toSelectSet, selectedSet)) {
+			console.log("setSelection: no change");
+			// Nothing to do.
+			return;
+		}
+		// TODO: should probably just add the ones that have changed.
+		this.clearSelection(null, false);
+		for (let i = 0; i < toSelect.length; i++) {
+			this.addSelection(toSelect[i], true, false, false);
+		}
+	}
+
+	/**
+	 * Clear selection, leaving an optional item still selected.
+	 */
 	clearSelection(leaveSelected: SelectableT = null, notify: boolean = true) {
 		let res = [];
 		let dirty = false;
@@ -587,44 +628,54 @@ class SelectionManager<SelectableT extends Selectable> {
 	 * that is added. See `addSelectable()`.
 	 */
 	createOnPointerDownInside(target: SelectableT) {
-		const __this = this;
 		return (event: PIXI.InteractionEvent) => {
-			console.log(`pointer down (selection manager ${__this.mimetype})`);
-			// If middle click, then ignore. We want the viewport to handle it as a
-			// pan.
+			// No matter what button, we will close any open context menus.
+			this.hideContextMenu();
+			console.log(`pointer down (selection manager ${this.mimetype})`);
 			if (event.data.button === 1) {
+				// Middle-click.
+				// Ignore. We want the viewport to handle it as a pan.
 				return;
 			}
-			// Only select or drag on left click.
-			if (!(event.data.button === 0)) {
-				return;
-			}
+
+			// Right-click and left-click.
 			// I didn't think there was any propagation/bubbling, but it 
 			// seems as event.stopPropagation() is needed to prevent the
 			// selection from being cleared by the viewport listener.
 			event.stopPropagation();
-			// Selection
-			__this.focused = target;
-			__this.addSelection(target, event.data.originalEvent.ctrlKey);
-			const pointerPos = event.data.getLocalPosition(this.positionParent);
-			const clickTimeMs = Date.now();
-			// Possibly handle double click.
-			if (clickTimeMs - this.lastClickTimeMs < SelectionManager.DOUBLE_CLICK_MS) {
-				// Wait until up click. Most other editors seem to do this. One thing
-				// it avoids is any click events that are registered in the 
-				// _onDoubleSelectEnter callback being called immediately, which is
-				// undesirable, as a click event is probably used to leave the double
-				// click focus mode.
-				const onPointerUp = () => {
-					// Remove listener.
-					target.selectTarget().off('pointerup', onPointerUp);
-					this._onDoubleClick(target);
-				};
-				this._onPreDoubleClick(target);
-				target.selectTarget().on('pointerup', onPointerUp);
+			this.focused = target;
+			this.addSelection(target, event.data.originalEvent.ctrlKey);
+
+			if (event.data.button === 2) {
+				// Right-click.
+				this.showContextMenu(event);
+			} else {
+				// Left-click.
+				//   - double-click
+				//   - drag initiation
+				if (!(event.data.button === 0)) {
+					throw new Error(`Unexpected button ${event.data.button}`);
+				}
+				const pointerPos = event.data.getLocalPosition(this.positionParent);
+				const clickTimeMs = Date.now();
+				// Possibly handle double click.
+				if (clickTimeMs - this.lastClickTimeMs < SelectionManager.DOUBLE_CLICK_MS) {
+					// Wait until up click. Most other editors seem to do this. One thing
+					// it avoids is any click events that are registered in the 
+					// _onDoubleSelectEnter callback being called immediately, which is
+					// undesirable, as a click event is probably used to leave the double
+					// click focus mode.
+					const onPointerUp = () => {
+						// Remove listener.
+						target.selectTarget().off('pointerup', onPointerUp);
+						this._onDoubleClick(target);
+					};
+					this._onPreDoubleClick(target);
+					target.selectTarget().on('pointerup', onPointerUp);
+				}
+				this.lastClickTimeMs = clickTimeMs;
+				this.onDragStart(pointerPos);
 			}
-			__this.lastClickTimeMs = clickTimeMs;
-			this.onDragStart(pointerPos);
 		};
 	}
 
@@ -695,7 +746,7 @@ class SelectionManager<SelectableT extends Selectable> {
 			const moveVector = newPosition.subtract(this.dragStartPosition);
 			// toLocal(position, <what?>, <point to store result>)
 			for (let i = 0; i < this.dragTargets.length; i++) {
-				//const dragTarget = __this.selected[i].selectTarget();
+				//const dragTarget =this.selected[i].selectTarget();
 				this.dragTargets[i].obj.position = this.dragObjStarts[i].add(
 					moveVector);
 			}
@@ -780,12 +831,33 @@ class SelectionManager<SelectableT extends Selectable> {
 			});
 		}
 	}
+
+	showContextMenu(event: PIXI.InteractionEvent) {
+		if (this.isContextMenu) {
+			throw Error("Context menu already being shown.");
+		}
+		this._onContextMenuHide = this._onContextMenuShow(event, this.selected);
+		this.isContextMenu = true;
+	}
+
+	hideContextMenu() {
+		if (!this.isContextMenu) {
+			return;
+		}
+		this._onContextMenuHide();
+		this.isContextMenu = false;
+	}
+
+	onContextMenuShow(fn: (e: PIXI.InteractionEvent, s: SelectableT[]) => (() => void)) {
+		this._onContextMenuShow = fn;
+	}
 }
 
 class TimeControl {
 	// Appearance
 	width = 400;
 	height = 70;
+	// Total left right padding will be padding[0]*2.
 	padding = [20, 10];
 	innerWidth: number;
 	innerHeight: number;
@@ -868,7 +940,7 @@ class TimeControl {
 	}
 
 	xToRel(x: number) {
-		x = x - this.padding[0] / 2;
+		x = x - this.padding[0];
 		x = Math.max(x, 0);
 		x = Math.min(x, this.innerWidth);
 		const rel = x / this.innerWidth;
@@ -1004,7 +1076,7 @@ class MainLayout {
 	}
 }
 
-class Snippet implements Selectable {
+export class Snippet implements Selectable {
 	static defaultSquareLen = 10;
 	static selectBorderWidth = 1;
 	static padFactor = 0.05;
@@ -1136,6 +1208,7 @@ class Snippet implements Selectable {
 		};
 	}
 
+
 	stimToShow(): number[] | null {
 		const absIdx = absSnippetIdx(this.spikeIdx, this.snipIdx);
 		let res: number[];
@@ -1147,18 +1220,18 @@ class Snippet implements Selectable {
 		return res;
 	}
 
-	color() {
-		let color = undefined;
-		const stim = this.stimToShow();
+	color(): number {
+		const colorAsNumber = colorutils.rgbToNumeric(this.colorRGB());
+		return colorAsNumber;
+	}
+
+	colorRGB(): number[] {
+		let stim = this.stimToShow();
 		if (stim === null) {
-			color = 0x000000;
-		} else {
-			const scale = 0.9;
-			color = rgbToNumeric(scale * Math.max(0, Math.min(1, stim[0])),
-				scale * Math.max(0, Math.min(1, stim[1])),
-				scale * Math.max(0, Math.min(1, stim[2])));
+			stim = [0, 0, 0, 0];
 		}
-		return color;
+		const sRGB = colorutils.stimToSRGB(stim);
+		return sRGB;
 	}
 }
 
@@ -1178,9 +1251,10 @@ class GroupViewMode {
 	}
 }
 
-class Group implements Selectable, DropReceiver {
-	// Initial shape will be square
-	static lenOnCreation = 150;
+export class Group implements Selectable, DropReceiver {
+	// Initial shape is square. 
+	static widthOnCreation = 150;
+	static heightOnCreation = 150;
 	static padding = 3;
 	static maxSquareSize = 50;
 	static selectBorderWidth = 1;
@@ -1242,9 +1316,9 @@ class Group implements Selectable, DropReceiver {
 			return;
 		}
 		this.snippets.splice(index, 1);
-		console.log("removing snippet");
 		this.container.removeChild(snip.container);
 		if (rebuild) {
+			console.log("Removing snippet, rebuild");
 			this.rebuild();
 		}
 		if (destroy) {
@@ -1335,8 +1409,8 @@ class Group implements Selectable, DropReceiver {
 		this.container.addChild(this.blurredBg);
 		this.container.addChild(this.gRect);
 		this.header = Group.addHeader(this.container, this.title);
-		this.width = Group.lenOnCreation;
-		this.height = Group.lenOnCreation;
+		this.width = Group.widthOnCreation;
+		this.height = Group.heightOnCreation;
 		this.rebuild();
 	}
 
@@ -1503,17 +1577,19 @@ class Group implements Selectable, DropReceiver {
 	}
 }
 
-class Workspace implements DropReceiver {
+export class Workspace implements DropReceiver {
 	static margin = 20;
 	static numCols = 6;
 	groups: Group[];
+	openGroup: Group | null = null;
 	container: PIXI.Container;
 	col: number = 0;
 	row: number = 0;
-	groupSelectionMgr: SelectionManager<Group>;
-	snippetSelectionMgr: SelectionManager<Snippet>;
+	groupSelectionMgr: SelectionManager<Group> | null;
+	snippetSelectionMgr: SelectionManager<Snippet> | null = null;
 	canvas: HTMLCanvasElement;
 	viewport: Viewport;
+	_onDestroy = [];
 
 	// Option
 	// The snippet drop onto the viewport might become a bit annoying.
@@ -1525,7 +1601,59 @@ class Workspace implements DropReceiver {
 		this.groups = [];
 		this.container = new PIXI.Container();
 		this.groupSelectionMgr = this.createGroupSelectionMgr([]);
-		this.snippetSelectionMgr = null;
+		this.addKeyboardShortcuts();
+	}
+
+	destroy() {
+		for (const f of this._onDestroy) {
+			f();
+		}
+	}
+
+	addKeyboardShortcuts() {
+		const handler = (event: KeyboardEvent) => {
+			const isGroupOpen = this.openGroup != null;
+			if (isGroupOpen) {
+				// Keybindings for when a group is open.
+				if (event.key.toLowerCase() == "r") {
+					if (event.shiftKey) {
+						this.selectSnippetsByOnLED(0, true);
+					} else {
+						this.selectSnippetsByOnLED(0, false);
+					}
+				} else if (event.key.toLowerCase() == "g") {
+					if (event.shiftKey) {
+						this.selectSnippetsByOnLED(1, true);
+					} else {
+						this.selectSnippetsByOnLED(1, false);
+					}
+				} else if (event.key.toLowerCase() == "b") {
+					if (event.shiftKey) {
+						this.selectSnippetsByOnLED(2, true);
+					} else {
+						this.selectSnippetsByOnLED(2, false);
+					}
+				} else if (event.key.toLowerCase() == "u") {
+					if (event.shiftKey) {
+						this.selectSnippetsByOnLED(3, true);
+					} else {
+						this.selectSnippetsByOnLED(3, false);
+					}
+				} else if (event.key.toLowerCase() == "s") {
+					if (event.shiftKey) {
+						// nothing
+					} else {
+						this.selectSnippetsSimimlarToSelected();
+					}
+				}
+			}
+		};
+		const removeHandler = () => {
+			window.removeEventListener('keydown', handler);
+		};
+		this._onDestroy.push(removeHandler);
+		removeHandler();
+		window.addEventListener('keydown', handler);
 	}
 
 	/**
@@ -1558,14 +1686,6 @@ class Workspace implements DropReceiver {
 		});
 		manager.onDoubleClick((selected: Group) => {
 			// Enter a special "single group edit" mode.
-			console.log("Open group!")
-			selected.setViewMode(GroupViewMode.EditThis);
-			// Set mode of remaining groups.
-			for (const group of this.groups) {
-				if (group != selected) {
-					group.setViewMode(GroupViewMode.EditOther);
-				}
-			}
 			// Stop using this selection manager and transition to the snippet 
 			// selection manager. Disable all interactivity too. The snippet manager
 			// will reenable what it needs.
@@ -1573,6 +1693,7 @@ class Workspace implements DropReceiver {
 			this.groupSelectionMgr = null;
 			this.disableAllInteractivity();
 			this.snippetSelectionMgr = this.createSnippetSelectionMgr(selected);
+			selectionMode.set("snippet");
 		});
 		return manager;
 	}
@@ -1583,21 +1704,27 @@ class Workspace implements DropReceiver {
 		// Enable interativity for the selected group so that it captures clicks
 		// and does nothing with them. We don't want clicks within this group to
 		// exit it's own edit mode.
+		// Without registering a callback, the parent will receive it, even if
+		// the click is over the child.
 		const emptyCallback = (event: PIXI.InteractionEvent) => {
 			// Only catch left-click. We still want to be able to pan with mouse over
-			// a group or snippet.
-			if (event.data.button != 0) {
-				return;
-			}
-			// Only prevent leaving if we aren't dragging. 
+			// a group or snippet, and are not in the middle of dragging.
 			// If we are dragging, then we don't want to get stuck in 
 			// drag mode if we drop back on ourself.
-			if (!manager.isDragging()) {
+			if (event.data.button == 0 && !manager.isDragging()) {
 				// I didn't think there was any propagation/bubbling, but it 
 				// seems as event.stopPropagation() is needed here.
-				event.stopPropagation()
+				event.stopPropagation();
 			}
 		};
+		selectedGroup.setViewMode(GroupViewMode.EditThis);
+		this.openGroup = selectedGroup;
+		// Set mode of remaining groups.
+		for (const group of this.groups) {
+			if (group != selectedGroup) {
+				group.setViewMode(GroupViewMode.EditOther);
+			}
+		}
 		selectedGroup.container.interactive = true;
 		selectedGroup.selectTarget().on('pointerdown', emptyCallback);
 		selectedGroup.selectTarget().on('pointerup', emptyCallback);
@@ -1632,18 +1759,24 @@ class Workspace implements DropReceiver {
 		});
 		manager.onPreDoubleClick((selected: Snippet) => {
 			console.log("double click on stimulus");
-			const selectedStim = selected.stimToShow();
-			const threshold = 0.4;
-			function dist(arrayA: number[], arrayB: number[]) {
-				return arrayA.map((v, i) => v - arrayB[i])
-					.reduce((acc, v) => acc + Math.pow(v, 2));
-			}
-			// Check all other snippets for stimulus value proximity.
+			// Not used anymore. Was previously used for filtering, but that is now
+			// done by context menu and keyboard shortcuts.
+		});
+
+		/*manager.onRightClick((selected: Snippet[]) => {
+			console.log("right click on stimulus");
+			const selected0 = selected[0];
+			const selectedStim = selected0.stimToShow();
+			const idxOfMax = selectedStim.indexOf(Math.max(...selectedStim));
+			const threshold = 0.3
+			const dist = (a: number, b: number) => Math.abs(a - b);
 			for (const snip of selectedGroup.snippets) {
-				if (snip != selected) {
+				if (snip != selected0) {
 					const otherStim = snip.stimToShow();
-					if (otherStim !== null && dist(selectedStim, otherStim) < threshold) {
-						console.log("Close to other stimulus:", snip);
+					if (otherStim !== null && dist(selectedStim[idxOfMax],
+						otherStim[idxOfMax]) < threshold) {
+						//console.log("Stim close: ", selectedStim, " vs. ", otherStim,
+						//				  ", dist: ", dist(selectedStim, otherStim));
 						// A bit hacky here, but the selection is the "ctrl" behaviour, and
 						// that's the addSelection() interface at the moment. TODO: refactor.
 						const ctrlKey = true;
@@ -1652,10 +1785,12 @@ class Workspace implements DropReceiver {
 				}
 			}
 		});
+		*/
 		// Prepair leave methods.
 		const leaveGroupEdit = () => {
 			this.viewport.off('pointerdown', leaveGroupEditByMouse);
 			this.viewport.off('keydown', leaveGroupEditByButton);
+			this.openGroup = null;
 			selectedGroup.selectTarget().off('pointerdown', emptyCallback);
 			selectedGroup.selectTarget().off('pointerup', emptyCallback);
 			// Change the display mode of the groups back to View. 
@@ -1669,6 +1804,7 @@ class Workspace implements DropReceiver {
 			this.disableAllInteractivity();
 			// Remake the group selection manager.
 			this.groupSelectionMgr = this.createGroupSelectionMgr(this.groups);
+			selectionMode.set("group");
 		};
 		const leaveGroupEditByButton = (event) => {
 			if (event.key == 'Escape') {
@@ -1677,6 +1813,7 @@ class Workspace implements DropReceiver {
 		};
 		const leaveGroupEditByMouse = (event: PIXI.InteractionEvent) => {
 			// Only take action on left click.
+			console.log("leave group edit on pointer down");
 			if (!(event.data.button === 0)) {
 				return;
 			}
@@ -1698,10 +1835,10 @@ class Workspace implements DropReceiver {
 
 	addGroup(group: Group) {
 		this.groups.push(group);
-		const nextX = Group.lenOnCreation + this.col *
-			(Group.lenOnCreation + Workspace.margin);
-		const nextY = Group.lenOnCreation + this.row *
-			(Group.lenOnCreation + Workspace.margin);
+		const nextX = Group.widthOnCreation + this.col *
+			(Group.widthOnCreation + Workspace.margin);
+		const nextY = Group.heightOnCreation + this.row *
+			(Group.heightOnCreation + Workspace.margin);
 		this.col++;
 		if (this.col > Workspace.numCols) {
 			this.col = 0;
@@ -1737,13 +1874,19 @@ class Workspace implements DropReceiver {
 	onDrop(objects: any[], mimetype: string, pointerPos: PIXI.Point) {
 		console.log("drop on workspace");
 		if (mimetype === "snippet") {
-			const group = new Group("Custom group");
 			const snippets = objects as Snippet[];
+			if (snippets.length === 0) {
+				return;
+			}
+			const group = new Group("Custom group");
+			const origGroup = snippets[0].groupBackRef;
 			for (const snip of snippets) {
-				const origGroup = snip.groupBackRef;
-				origGroup.removeSnippet(snip, false);
+				const destroy = false;
+				const rebuild = false
+				origGroup.removeSnippet(snip, destroy, rebuild);
 				snip.container.interactive = false;
 			}
+			origGroup.rebuild();
 			group.addSnippets(snippets);
 			this.addGroup(group);
 			group.container.position = pointerPos;
@@ -1765,16 +1908,132 @@ class Workspace implements DropReceiver {
 	}
 	/**
 	 * [end] DropReceiver interface
-		 */
+	 */
+
+	/**
+	 * [Begin] Snippet selection routines.
+	 * 
+	 * Selection behaviours like:
+	 *   - select all that are currently red
+	 *   - select all that follow a spike select 
+	 * 
+	 * These methods are called by the context menu, and are also tied to 
+	 * keyboard shortcuts.
+	 */
+
+	/**
+	 * Select snippets that currently have the given stimumlus component on.
+	 * 
+	 * Snippets are selected from the snippets of the open group. It's an error 
+	 * to call this method when a group is not open.
+	 *
+	 * @param ledIdx - the stimulus component to select. This is a value from 0 
+	 * 	to 3 for a 4-LED stimulus.
+	 * @param exclusive - wheather other LEDs must be off.
+	 */
+	selectSnippetsByOnLED(ledIdx: number, exclusive: boolean) {
+		if (this.snippetSelectionMgr == null) {
+			throw new Error("Cant' select snippets: no snippet selection manager.");
+		}
+		if (ledIdx < 0 || ledIdx >= 4) {
+			throw new Error("Caller error: invalid color idx. Only 4 colors supported.");
+		}
+		if (this.openGroup == undefined || this.openGroup == null) {
+			throw new Error("Unexpected error: no open group.");
+		}
+		// Currently, we assume full on-off stimulus. While full on means
+		// stimulus value == 1, the downsampling means that the stimulus value
+		// transitions from 0 through intermediate values to 1 and then 
+		// oscillates a bit. With this in mind, we use a <1 threshold to filter
+		// in the on stimuli.
+		const onThreshold = 0.5;
+		const filtered = this.openGroup.snippets.filter((s) => {
+			const stim = s.stimToShow();
+			if (stim === null) {
+				return false;
+			}
+			const match = stim.every((v, i) => {
+				if (i === ledIdx) {
+					return v >= onThreshold;
+				} else {
+					return exclusive ? v < onThreshold : true;
+				}
+			});
+			return match;
+		});
+		this.snippetSelectionMgr.setSelection(filtered);
+	}
+
+	/**
+	 * Select snippets that currently have a color similar to the selected snippet.
+	 * 
+	 * Snippets are selected from the snippets of the open group. It's an error 
+	 * to call this method when a group is not open.
+	 * 
+	 * Similarity is euclidean distance between the LED values.
+	 */
+	selectSnippetsSimimlarToSelected() {
+		if (this.snippetSelectionMgr == null) {
+			throw new Error("Can't select snippets: no snippet selection manager.");
+		}
+		const selectedSnippets = this.snippetSelectionMgr.selected;
+		if (selectedSnippets == null || selectedSnippets.length == 0) {
+			throw new Error("Can't select similar snippets: no snippet selected.");
+		}
+		if (selectedSnippets.length !== 1) {
+			throw new Error(`Can't select similar snippets: more than 1 snippet 
+											selected.`);
+		}
+		const threshold = 0.3;
+		function dist(arrayA: number[], arrayB: number[]) {
+			return arrayA.map((v, i) => Math.pow(v - arrayB[i], 2))
+				.reduce((acc, v) => acc + v);
+		}
+		if (this.openGroup == undefined || this.openGroup == null) {
+			throw new Error(`Unexpected error: no open group.`);
+		}
+		// Check all other snippets for stimulus value proximity.
+		const selectedStim = selectedSnippets[0].stimToShow();
+		const toSelect = this.openGroup.snippets.filter((s) => {
+			const stim = s.stimToShow();
+			if (stim === null) {
+				return false;
+			}
+			const match = dist(selectedStim, stim) < threshold;
+			return match;
+		});
+		this.snippetSelectionMgr.setSelection(toSelect);
+	}
+	/**
+	 * [End] Snippet selection routines.
+	 */
 }
 
 export let workspace = null;
 
-export async function addCellAsGroup(recId: number, cellId: number) {
+export async function addCellAsGroup(recId: number, cellId: number, cellSelectMode: string) {
 	// Preload the stimulus data.
 	const rec = recsById.get(recId);
 	await rec.fetchStimulus();
-	const spikes = await fetch(`/api/recording/${recId}/cell/${cellId}/spikes`)
+	// TODO: hardcoded mindist=100, which is tied to downsample rate.
+	const url_all = `/api/recording/${recId}/cell/${cellId}/spikes`;
+	const url_nooverlap_first = `/api/recording/${recId}/cell/${cellId}/spikes?mindist=100&mode=first`;
+	const url_nooverlap_other = `/api/recording/${recId}/cell/${cellId}/spikes?mindist=100&mode=allButFirst`;
+	let url = null;
+	switch (cellSelectMode) {
+		case "all":
+			url = url_all;
+			break
+		case "first":
+			url = url_nooverlap_first;
+			break
+		case "allButFirst":
+			url = url_nooverlap_other;
+			break
+		default:
+			throw new Error(`Unknown cellSelectMode: ${cellSelectMode}`);
+	}
+	const spikes = await fetch(url)
 		.then(response => response.json());
 	let snippets = [];
 	for (let i = 0; i < spikes.length; i++) {
@@ -1828,7 +2087,8 @@ function addKeyControls(): () => void {
 }
 
 export function startEngine(canvas: HTMLCanvasElement,
-	app: PIXI.Application, viewport: Viewport) {
+	app: PIXI.Application, viewport: Viewport): Workspace {
+	console.log("Init workspace.");
 	workspace = new Workspace(canvas, viewport);
 	viewport.addChild(workspace.container);
 	app.ticker.add(ontick);
@@ -1839,6 +2099,7 @@ export function startEngine(canvas: HTMLCanvasElement,
 		new TimeControl(snippetDurationSecs, padDurationSecs, playbackTime));
 	app.stage.addChild(layout.container);
 	const unsubs = addKeyControls();
+	return workspace;
 }
 
 /**
