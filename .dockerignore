@@ -8,4 +8,8 @@ notebooks
 .pytest_cache
 .idea
 prediction_viewer
-snippet_viewer
+
+snippet_viewer/flaskapp/static/
+snippet_viewer/resources/
+snippet_viewer/db/
+

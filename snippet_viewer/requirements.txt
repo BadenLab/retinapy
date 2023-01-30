@@ -1,0 +1,16 @@
+mypy
+numpy
+pandas
+torch
+scikit-learn
+scipy
+plotly
+h5py
+bidict
+ipympl
+kaleido
+typer
+flask
+psycopg[binary]
+psycopg_pool
+pydantic

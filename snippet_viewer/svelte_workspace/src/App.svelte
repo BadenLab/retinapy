@@ -7,7 +7,7 @@ import tippy from 'tippy.js';
 import { tick } from 'svelte';
 import Plotly from 'plotly.js-dist-min';
 
-
+// workspace_id comes from the template.
 let recordingId = 0;
 let cellIds = [];
 let tippyTooltips = [];
@@ -198,11 +198,14 @@ All but first
 		<div class="cell_box">
 			<button
 				class="cell_button"
-				on:click={() => engine.addCellAsGroup(recordingId, cId, cellSelectMode)}
+				on:click={() => engine.addGroupFromCell(recordingId, cId)}
 				>{cId}</button>
 		</div>
 	{/each}
 </div>
+
+<!-- Make a separate component at some point -->
+<div id="kernelplots" />
 
 <div class="button">
 	<button type="button" name="play-pause" on:click={() => pauseCtrl.toggle()}
@@ -210,10 +213,8 @@ All but first
 	</button>
 </div>
 
-<!-- Make a separate component at some point -->
-<div id="kernelplots" />
 
-<Canvas />
+<Canvas workspace_id={window.workspace_id} />
 
 <style>
 	:global(body) {

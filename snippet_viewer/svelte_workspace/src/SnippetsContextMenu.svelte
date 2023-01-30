@@ -56,8 +56,10 @@
 						snippetSelection != null &&
 						snippetSelection.length === 1;
 					if (isSimilarOptionEnabled) {
-						const rgb = snippetSelection[0].colorRGB();
-						similarColor = `rgb(${255*rgb[0]}, ${255*rgb[1]}, ${255*rgb[2]})`;
+						const rgb = snippetSelection[0]._colorRGB();
+						similarColor = `rgb(${255 * rgb[0]}, ${255 * rgb[1]}, ${
+							255 * rgb[2]
+						})`;
 					}
 					console.log("in the context menu!!");
 					console.log(`x: ${x}, y: ${y}`);
@@ -80,6 +82,11 @@
 
 	function selectByLED(ledIdx: number, exclusive: boolean) {
 		engine.workspace.selectSnippetsByOnLED(ledIdx, exclusive);
+		closeMenu();
+	}
+
+	function selectFirst(duration_secs: number) {
+		engine.workspace.selectSnippetsAfterQuiet(duration_secs);
 		closeMenu();
 	}
 
@@ -196,29 +203,40 @@
 				<div class="context-menu-label">
 					Similar to:
 					{#if isSimilarOptionEnabled}
-						<span class="context-menu-circ-icon"
-						style="background-color: {similarColor};"></span>
+						<span
+							class="context-menu-circ-icon"
+							style="background-color: {similarColor};"
+						/>
 					{:else}
-						<span style="font-size: 80%; margin-left:0.5rem;">&lt;color&gt;</span>
+						<span style="font-size: 80%; margin-left:0.5rem;"
+							>&lt;color&gt;</span
+						>
 					{/if}
-
 				</div>
 				<kbd class="context-menu-shortcut">s</kbd>
 			</button>
 		</li>
-		<!--
 		<li>
-			<button class="context-menu-item">
+			<button
+				class="context-menu-item"
+				on:click={(e) => selectFirst(0.1)}
+			>
 				<div class="context-menu-label">Follows (100 ms)</div>
 			</button>
 		</li>
 		<li>
-			<button class="context-menu-item">
+			<button
+				class="context-menu-item"
+				on:click={(e) => selectFirst(0.5)}
+			>
 				<div class="context-menu-label">Follows (500 ms)</div>
 			</button>
 		</li>
 		<li>
-			<button class="context-menu-item">
+			<button
+				class="context-menu-item"
+				on:click={(e) => selectFirst(1.0)}
+			>
 				<div class="context-menu-label">Follows (1000 ms)</div>
 			</button>
 		</li>
@@ -237,7 +255,6 @@
 				<div class="context-menu-label">First (1000 ms)</div>
 			</button>
 		</li>
-		-->
 	</menu>
 {/if}
 

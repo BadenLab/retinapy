@@ -1,0 +1,7 @@
+#!/usr/bin/bash
+
+docker run -it --rm \
+-v $(pwd):/app \
+-p 0.0.0.0:5000:5000 \
+webi \ 
+./scripts/runtest.sh

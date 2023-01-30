@@ -4,6 +4,7 @@ import * as PIXI from 'pixi.js';
 import '@pixi/math-extras';
 import type {Viewport} from 'pixi-viewport';
 import * as colorutils from './color.js';
+import * as sync from './sync.js';
 
 
 let _playbackSpeed = 0.05;
@@ -133,8 +134,10 @@ class Recording {
 	id: string;
 	name: string;
 	sensorSampleRate: number;
-	stimulus: number[][];
+	_stimulus: number[][];
 	clusterIds: number[];
+	_stimPromise: Promise<number[][]> = null;
+	_stimulusColor: number[] = null;
 
 	constructor(id: string, name: string, sensorSampleRate: number,
 		clusterIds: number[]) {
@@ -142,16 +145,32 @@ class Recording {
 		this.name = name;
 		this.sensorSampleRate = sensorSampleRate;
 		this.clusterIds = clusterIds;
-		this.stimulus = null;
+		this._stimulus = null;
 	}
 
 	async fetchStimulus(): Promise<number[][]> {
-		if (this.stimulus == null) {
+		if (this._stimulus == null) {
 			// Fetch data
-			this.stimulus = await fetch(`/api/recording/${this.id}/stimulus?downsample=${downsample}`)
+			this._stimulus = await fetch(`/api/recording/${this.id}/stimulus?downsample=${downsample}`)
 				.then(response => response.json());
+			// Build the color array (saves computing it each timestep).
+			this._stimulusColor = this._stimulus.map(stim => {
+				return colorutils.rgbToNumeric(colorutils.stimToSRGB(stim));
+			});
 		}
-		return this.stimulus
+		return this._stimulus;
+	}
+
+	async stimulus(): Promise<number[][]> {
+		if (this._stimulus == null) {
+			this._stimPromise = this._stimPromise ? this._stimPromise : this.fetchStimulus();
+			await this._stimPromise;
+		}
+		return this._stimulus;
+	}
+
+	stimulusColor(): number[] {
+		return this._stimulusColor;
 	}
 
 	/*stimulusAtTime(time: number): number[] {
@@ -1081,10 +1100,9 @@ export class Snippet implements Selectable {
 	static selectBorderWidth = 1;
 	static padFactor = 0.05;
 	// Data
-	// The recording ID, cell ID and the sample at which the spike occured
-	// identify the snippet.  
+	// The recording ID and the sample at which the spike occured identify the 
+	// snippet.  
 	recId: number;
-	cellId: number;
 	spikeIdx: number;
 	// The current index within the snippet to display.
 	snipIdx: number;
@@ -1094,6 +1112,8 @@ export class Snippet implements Selectable {
 	container: PIXI.Container;
 	rect1: PIXI.Graphics;
 	squareLen: number;
+	stimulus: number[][] = null;
+	stimulusColor: number[] = null;
 	// This is saved and called on destroy() so that we can clean up
 	// references to this object when it's removed from the scene. It's
 	// the unsubscribe for the Svelte store that tracks the snippet idx.
@@ -1107,10 +1127,8 @@ export class Snippet implements Selectable {
 
 	constructor(
 		recId: number,
-		cellId: number,
 		spikeIdx: number) {
 		this.recId = recId;
-		this.cellId = cellId;
 		this.spikeIdx = spikeIdx;
 		this.squareLen = Snippet.defaultSquareLen;
 		this.initContainer();
@@ -1128,7 +1146,14 @@ export class Snippet implements Selectable {
 		this.rect1 = new PIXI.Graphics();
 		this.container.addChild(this.rect1);
 		this.snipIdx = 0;
-		this.rebuild();
+		recsById.get(this.recId).stimulus().then(
+			(stimulus: number[][]) => {
+				// TODO:  make these references strong in Snippet, but weak in the 
+				// recording object, allowing it to be collected.
+				this.stimulus = stimulus;
+				this.stimulusColor = recsById.get(this.recId).stimulusColor();
+				this.rebuild();
+			});
 		//this.container.hitArea = new PIXI.Rectangle(
 		//		0, 0, this.container.width, this.container.height);
 	}
@@ -1192,7 +1217,7 @@ export class Snippet implements Selectable {
 			this.rect1.lineStyle(0);
 		}
 		// Fill color
-		const color = this.isDragging ? 0x000000 : this.color();
+		const color = this.isDragging ? 0x000000 : this.colorFast();
 		this.rect1.beginFill(color);
 		this.rect1.drawRect(pad, pad,
 			this.squareLen - pad * 2,
@@ -1210,12 +1235,16 @@ export class Snippet implements Selectable {
 
 
 	stimToShow(): number[] | null {
+		if (this.stimulus == null) {
+			// Stimulus not yet loaded, display [0, 0, 0, 0].
+			return null;
+		}
 		const absIdx = absSnippetIdx(this.spikeIdx, this.snipIdx);
 		let res: number[];
 		if (absIdx < 0) {
 			res = null;
 		} else {
-			res = recsById.get(this.recId).stimulus[absIdx];
+			res = this.stimulus[absIdx];
 		}
 		return res;
 	}
@@ -1223,6 +1252,20 @@ export class Snippet implements Selectable {
 	color(): number {
 		const colorAsNumber = colorutils.rgbToNumeric(this.colorRGB());
 		return colorAsNumber;
+	}
+
+	colorFast(): number {
+		if (this.stimulusColor == null) {
+			return 0;
+		}
+		const absIdx = absSnippetIdx(this.spikeIdx, this.snipIdx);
+		let res: number;
+		if (absIdx < 0) {
+			res = 0;
+		} else {
+			res = this.stimulusColor[absIdx];
+		}
+		return res;
 	}
 
 	colorRGB(): number[] {
@@ -1271,6 +1314,7 @@ export class Group implements Selectable, DropReceiver {
 	static fontSize = 8;
 
 	title: string;
+	id: number = null;
 	snippets: Snippet[];
 	container: PIXI.Container;
 	header: PIXI.Container;
@@ -1287,11 +1331,13 @@ export class Group implements Selectable, DropReceiver {
 	// Set to true to have "(edited)" appended to group title.
 	edited: boolean = false;
 
-	constructor(title: string) {
+	constructor(title: string, snippets: Snippet[]) {
 		this.title = title;
-		this.snippets = [];
 		this.color = Group.groupColors[Math.floor(Math.random() * 6)];
+		this.snippets = [];
 		this.initContainer();
+		// Snippets must be added after group PIXI container is created.
+		this.addSnippets(snippets);
 	}
 
 	destroy() {
@@ -1555,6 +1601,10 @@ export class Group implements Selectable, DropReceiver {
 
 	onDragEnd() {
 		this.isDragging = false;
+		sync.patchGroupPos(workspace.id, this.id,
+			this.container.position.x,
+			this.container.position.y);
+
 	}
 
 	selectTarget() {
@@ -1580,6 +1630,7 @@ export class Group implements Selectable, DropReceiver {
 export class Workspace implements DropReceiver {
 	static margin = 20;
 	static numCols = 6;
+	id: string;
 	groups: Group[];
 	openGroup: Group | null = null;
 	container: PIXI.Container;
@@ -1595,7 +1646,8 @@ export class Workspace implements DropReceiver {
 	// The snippet drop onto the viewport might become a bit annoying.
 	enableViewportDrop: boolean = true;
 
-	constructor(canvas: HTMLCanvasElement, viewport: Viewport) {
+	constructor(id: string, canvas: HTMLCanvasElement, viewport: Viewport) {
+		this.id = id;
 		this.canvas = canvas;
 		this.viewport = viewport;
 		this.groups = [];
@@ -1681,7 +1733,7 @@ export class Workspace implements DropReceiver {
 		manager.onDelete((selected: Group[]) => {
 			console.log("Delete group!");
 			for (let i = 0; i < selected.length; i++) {
-				workspace.deleteGroup(selected[i]);
+				this.removeGroup(selected[i]);
 			}
 		});
 		manager.onDoubleClick((selected: Group) => {
@@ -1835,17 +1887,6 @@ export class Workspace implements DropReceiver {
 
 	addGroup(group: Group) {
 		this.groups.push(group);
-		const nextX = Group.widthOnCreation + this.col *
-			(Group.widthOnCreation + Workspace.margin);
-		const nextY = Group.heightOnCreation + this.row *
-			(Group.heightOnCreation + Workspace.margin);
-		this.col++;
-		if (this.col > Workspace.numCols) {
-			this.col = 0;
-			this.row++;
-		}
-		group.container.x = nextX;
-		group.container.y = nextY;
 		this.container.addChild(group.container);
 		if (this.groupSelectionMgr !== null) {
 			this.groupSelectionMgr.addSelectable(group);
@@ -1855,13 +1896,43 @@ export class Workspace implements DropReceiver {
 		}
 	}
 
-	deleteGroup(group: Group) {
+	createGroup(title: string, position: PIXI.Point, snippets: Snippet[]): Group {
+		const group = new Group(title, snippets);
+		// Position.
+		const doReposition = position == null;
+		if (doReposition) {
+			const nextX = Group.widthOnCreation + this.col *
+				(Group.widthOnCreation + Workspace.margin);
+			const nextY = Group.heightOnCreation + this.row *
+				(Group.heightOnCreation + Workspace.margin);
+			this.col++;
+			if (this.col > Workspace.numCols) {
+				this.col = 0;
+				this.row++;
+			}
+			group.container.x = nextX;
+			group.container.y = nextY;
+		} else {
+			group.container.position = position;
+		}
+		// Add.
+		this.addGroup(group);
+		// Sync.
+		const on_success = (group_id: number) => {
+			group.id = group_id;
+		};
+		sync.createGroup(this.id, groupSyncData(group), on_success);
+		return group;
+	}
+
+	removeGroup(group: Group) {
 		const index = this.groups.indexOf(group);
 		if (index < 0) {
 			return;
 		}
 		this.groups.splice(index, 1);
 		this.container.removeChild(group.container);
+		sync.deleteGroup(this.id, group.id);
 		group.destroy();
 	}
 
@@ -1878,7 +1949,6 @@ export class Workspace implements DropReceiver {
 			if (snippets.length === 0) {
 				return;
 			}
-			const group = new Group("Custom group");
 			const origGroup = snippets[0].groupBackRef;
 			for (const snip of snippets) {
 				const destroy = false;
@@ -1887,9 +1957,7 @@ export class Workspace implements DropReceiver {
 				snip.container.interactive = false;
 			}
 			origGroup.rebuild();
-			group.addSnippets(snippets);
-			this.addGroup(group);
-			group.container.position = pointerPos;
+			workspace.createGroup("Custom group", pointerPos, snippets);
 		}
 	}
 
@@ -1964,6 +2032,28 @@ export class Workspace implements DropReceiver {
 		this.snippetSelectionMgr.setSelection(filtered);
 	}
 
+	selectSnippetsAfterQuiet(durationSecs: number) {
+		if (this.snippetSelectionMgr == null) {
+			throw new Error("Cant' select snippets: no snippet selection manager.");
+		}
+		const afterQuiet: Snippet[] = []
+		if (this.openGroup.snippets.length > 0) {
+			afterQuiet.push(this.openGroup.snippets[0]);
+		}
+		for (let i = 1; i < this.openGroup.snippets.length; i++) {
+			const snip1 = this.openGroup.snippets[i - 1];
+			const snip2 = this.openGroup.snippets[i];
+			// The snippets might come from recordings with different sensor sample rates.
+			const sampleRate1 = recsById.get(snip1.recId).sensorSampleRate / downsample;
+			const sampleRate2 = recsById.get(snip1.recId).sensorSampleRate / downsample;
+			const gapSecs = (snip1.spikeIdx * sampleRate1 - snip2.spikeIdx * sampleRate2);
+			if (gapSecs > durationSecs) {
+				afterQuiet.push(snip2);
+			}
+		}
+		this.snippetSelectionMgr.setSelection(afterQuiet);
+	}
+
 	/**
 	 * Select snippets that currently have a color similar to the selected snippet.
 	 * 
@@ -2011,39 +2101,21 @@ export class Workspace implements DropReceiver {
 
 export let workspace = null;
 
-export async function addCellAsGroup(recId: number, cellId: number, cellSelectMode: string) {
+
+export async function addGroupFromCell(recId: number, cellId: number) {
 	// Preload the stimulus data.
 	const rec = recsById.get(recId);
 	await rec.fetchStimulus();
-	// TODO: hardcoded mindist=100, which is tied to downsample rate.
-	const url_all = `/api/recording/${recId}/cell/${cellId}/spikes`;
-	const url_nooverlap_first = `/api/recording/${recId}/cell/${cellId}/spikes?mindist=100&mode=first`;
-	const url_nooverlap_other = `/api/recording/${recId}/cell/${cellId}/spikes?mindist=100&mode=allButFirst`;
-	let url = null;
-	switch (cellSelectMode) {
-		case "all":
-			url = url_all;
-			break
-		case "first":
-			url = url_nooverlap_first;
-			break
-		case "allButFirst":
-			url = url_nooverlap_other;
-			break
-		default:
-			throw new Error(`Unknown cellSelectMode: ${cellSelectMode}`);
-	}
+
+	const url = `/api/recording/${recId}/cell/${cellId}/spikes?downsample=${downsample}`;
 	const spikes = await fetch(url)
-		.then(response => response.json());
+		.then(response => response.json())
 	let snippets = [];
 	for (let i = 0; i < spikes.length; i++) {
-		snippets.push(new Snippet(recId, cellId, spikes[i]));
+		snippets.push(new Snippet(recId, spikes[i]));
 	}
-	const group = new Group(`r-${rec.id} c-${cellId}`);
-	group.addSnippets(snippets);
-	workspace.addGroup(group);
+	workspace.createGroup(`r-${rec.id} c-${cellId}`, null, snippets);
 }
-
 
 export function updateClock(dt: number) {
 	if (!get(pauseCtrl)) {
@@ -2086,11 +2158,39 @@ function addKeyControls(): () => void {
 	return unsub;
 }
 
-export function startEngine(canvas: HTMLCanvasElement,
-	app: PIXI.Application, viewport: Viewport): Workspace {
+function groupsFromServerData(groupData: sync.GroupData[]) {
+	const groups: Group[] = [];
+	for (const gd of groupData) {
+		const snippets = [];
+		for (const spike of gd.spikes) {
+			snippets.push(new Snippet(spike.rec_id, spike.sample_idx));
+		}
+		const group = new Group(gd.title, snippets);
+		group.id = gd.id;
+		group.container.width = gd.width;
+		group.container.height = gd.height;
+		workspace.addGroup(group);
+		// Set position after, as the workspace will place it in a default 
+		// position. 
+		group.container.position.x = gd.x_pos;
+		group.container.position.y = gd.y_pos;
+		groups.push(group);
+	}
+	return groups;
+}
+
+export async function startEngine(workspace_id: string, canvas: HTMLCanvasElement,
+	app: PIXI.Application, viewport: Viewport): Promise<Workspace> {
 	console.log("Init workspace.");
-	workspace = new Workspace(canvas, viewport);
+	workspace = new Workspace(workspace_id, canvas, viewport);
 	viewport.addChild(workspace.container);
+	let [_, groupData] = await Promise.all([
+		recordings(),
+		sync.getGroups(workspace.id)])
+	// Don't need to set title, as it is server-side rendered.
+	//workspace.title = title;
+	workspace.groups = groupsFromServerData(groupData);
+
 	app.ticker.add(ontick);
 	// Outer container
 	const layout = new MainLayout(
@@ -2098,6 +2198,7 @@ export function startEngine(canvas: HTMLCanvasElement,
 		viewport,
 		new TimeControl(snippetDurationSecs, padDurationSecs, playbackTime));
 	app.stage.addChild(layout.container);
+	// TODO: unsubs
 	const unsubs = addKeyControls();
 	return workspace;
 }
@@ -2131,6 +2232,34 @@ export function isPaused() {
 export function setPlaybackTime(t: number) {
 	playbackTime.set(t);
 }
+
+
+
+/**
+ * Sync.
+ */
+
+/* 
+ * Extract from the UI classes the info needed to send to the server. 
+ */
+function groupSyncData(group: Group) {
+	return new sync.GroupData(group.id, group.title,
+		spikeSyncData(group.snippets),
+		group.container.position.x,
+		group.container.position.y,
+		group.width,
+		group.height);
+}
+
+function spikeSyncData(snippets: Snippet[]): sync.SpikeData[] {
+	const spikeData = snippets.map((snippet) => {
+		return new sync.SpikeData(snippet.recId, snippet.spikeIdx);
+	});
+	return spikeData;
+}
+/*
+ * /Sync
+ */
 
 /* Used? */
 export function setPlaybackTimeRel(r: number) {

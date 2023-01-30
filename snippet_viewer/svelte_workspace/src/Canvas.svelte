@@ -16,6 +16,7 @@
 		Workspace,
 	} from "./engine.js";
 
+	export let workspace_id = null;
 	let canvas: HTMLCanvasElement;
 	let pixiApp: PIXI.Application;
 	let viewport: Viewport;
@@ -70,7 +71,7 @@
 		// sure which is the best, but I'm leaning towards restricting it to the
 		// screen.
 		pixiApp.stage.hitArea = pixiApp.screen;
-		workspace = startEngine(canvas, pixiApp, viewport);
+		workspace = startEngine(workspace_id, canvas, pixiApp, viewport);
 		// add a red box
 		/*const sprite = viewport.addChild(new PIXI.Sprite(PIXI.Texture.WHITE))
 	sprite.tint = 0xff0000

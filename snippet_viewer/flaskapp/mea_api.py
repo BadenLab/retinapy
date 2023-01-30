@@ -11,12 +11,12 @@ import plotly
 
 DATA_DIR = "./resources/ff_noise_recordings"
 KERNEL_DIR = "chicken_kernel_plots_tooltip"
-#DATA_DIR = "./resources/frog_ff_noise"
-#KERNEL_DIR = "frog_kernel_plots_tooltip"
+# DATA_DIR = "./resources/frog_ff_noise"
+# KERNEL_DIR = "frog_kernel_plots_tooltip"
 CACHE_DIR = "./resources/snippets"
 DEFAULT_DOWNSAMPLE = 180
-#DEFAULT_KERNEL_LEN_MS = 1100 # ms
-#DEFAULT_KERNEL_PAD_MS = 100 # ms
+# DEFAULT_KERNEL_LEN_MS = 1100 # ms
+# DEFAULT_KERNEL_PAD_MS = 100 # ms
 
 """
 TODO: use caching instead.
@@ -123,40 +123,24 @@ def filter_spikes(spikes, min_dist):
     return first, other
 
 
-@bp.get("/recording/<int:rec_id>/cell/<int:cell_id>/spikes")
-def cell_spikes(rec_id, cell_id):
-    downsample = flask.request.args.get(
-        "downsample", default=DEFAULT_DOWNSAMPLE, type=int
-    )
-    min_dist = flask.request.args.get("mindist")
-    mode = flask.request.args.get("mode", default="all", type=str)
-    match mode:
-        case "all":
-            if min_dist is not None:
-                raise ValueError("mindist not supported for mode=all")
-        case "first":
-            if min_dist is None:
-                raise ValueError("mindist must be specified for mode=first")
-        case "allButFirst":
-            if min_dist is None:
-                raise ValueError("mindist must be specified for mode=allButFirst")
-
-    if not rec_id in recs_by_id:
-        return "Invalid recording id", 400
-    elif not cell_id in recs_by_id[rec_id].cluster_ids:
-        return "Invalid cell id", 400
+def cell_spikes(rec_id, cell_id, downsample):
     rec = recs_by_id[rec_id]
     cell_idx = rec.cid_to_idx(cell_id)
     spikes = rec.spike_events[cell_idx]
     spikes = mea.rebin_spikes(spikes, downsample).tolist()
-    if min_dist:
-        min_dist = int(min_dist)
-        first_spikes, other_spikes = filter_spikes(spikes, min_dist)
-        assert mode != "all"
-        if mode == "first":
-            spikes = first_spikes
-        elif mode == "allButFirst":
-            spikes = other_spikes
+    return spikes
+
+
+@bp.get("/recording/<int:rec_id>/cell/<int:cell_id>/spikes")
+def cell_spikes_(rec_id, cell_id):
+    downsample = flask.request.args.get(
+        "downsample", default=DEFAULT_DOWNSAMPLE, type=int
+    )
+    if not rec_id in recs_by_id:
+        return "Invalid recording id", 400
+    elif not cell_id in recs_by_id[rec_id].cluster_ids:
+        return "Invalid cell id", 400
+    spikes = cell_spikes(rec_id, cell_id, downsample)
     res = json.dumps(spikes)
     return res
 

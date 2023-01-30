@@ -13,11 +13,8 @@ RUN adduser --disabled-password --gecos '' --uid $USER_ID --gid $GROUP_ID $USER
 RUN mkdir $PROJ_ROOT && chown $USER $PROJ_ROOT
 WORKDIR $PROJ_ROOT	
 
-# These next two folders will be where we will mount our local data and out
-# directories. We create them manually (automatic creation when mounting will
-# create them as being owned by root, and then our program cannot use them).
-RUN mkdir data && chown $USER data
-RUN mkdir out && chown $USER out
+#RUN mkdir data && chown $USER data
+#RUN mkdir out && chown $USER out
 
 # tzdata configuration stops for an interactive prompt without the env var.
 # https://serverfault.com/questions/949991/how-to-install-tzdata-on-a-ubuntu-docker-image
@@ -30,13 +27,9 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y --no-install-recommends \
 	curl \
 	ca-certificates \
-	git \
-	libsm6 \
-	libxext6 \
-	libxrender-dev \
-	jq \
-	locales \
-	ffmpeg && \
+	python3-pip \
+	python-is-python3 \
+	locales && \
 	rm -rf /var/lib/apt/lists/*
 
 # Set the locale
@@ -46,13 +39,13 @@ ENV LANGUAGE en_US:en
 ENV LC_ALL en_US.UTF-8  
 
 ###############################################################################
-# Conda
+# Conda, for Node
 ###############################################################################
 
 # Set up the Conda environment (using Miniforge)
 ENV PATH=/home/$USER/mambaforge/bin:$PATH
 #COPY environment.yml /app/environment.yml
-RUN curl -sLo ./mambaforge.sh https://github.com/conda-forge/miniforge/releases/download/22.9.0-1/Mambaforge-22.9.0-1-Linux-x86_64.sh \
+RUN curl -sLo ./mambaforge.sh https://github.com/conda-forge/miniforge/releases/download/22.9.0-3/Mambaforge-22.9.0-3-Linux-x86_64.sh \
  && chmod +x ./mambaforge.sh \
  && ./mambaforge.sh -b -p /home/$USER/mambaforge \
  && rm ./mambaforge.sh \
@@ -60,51 +53,36 @@ RUN curl -sLo ./mambaforge.sh https://github.com/conda-forge/miniforge/releases/
 # && rm /app/environment.yml \
  && mamba clean -ya
 
+RUN conda install --yes -c conda-forge nodejs'>=12.12.0'
+
 ###############################################################################
 # /Conda
 ###############################################################################
 
+COPY ./snippet_viewer/requirements.txt requirements.txt
 RUN pip install --upgrade pip
-RUN pip install -r pkg_requirements.txt
-RUN pip install \
-	jupyterlab \
-	ipywidgets \
-	jupyterlab-vim \
-	jupyter-dash \
-	jupyterlab-spellchecker \
-	matplotlib \
-	pytest \
-	mypy \
-	dash
-	
+RUN pip install -r requirements.txt
 
-RUN conda install --yes -c conda-forge nodejs'>=12.12.0'
+COPY ./pkg_requirements.txt retinapy_requirements.txt
+RUN pip install -r retinapy_requirements.txt
 
-# From: https://stackoverflow.com/questions/67050036/enable-jupyterlab-extensions-by-default-via-docker
-COPY --chown=$USER tools/jupyter_notebook_config.py /etc/jupyter/
-# Try to get Jupyter Lab to allow extensions on startup.
-# This file was found by diffing a container running jupyterlab that had 
-# extensions manually enabled.
-COPY --chown=$USER tools/plugin.jupyterlab-settings /home/$USER/.jupyter/lab/user-settings/@jupyterlab/extensionmanager-extension/
-# Keyboard shortcuts
-COPY --chown=$USER tools/shortcuts.jupyterlab-settings /home/$USER/.jupyter/lab/user-settings/@jupyterlab/shortcuts-extension/
-# Getting some permission errors printed in terminal after running Jupyter Lab, 
-# and trying the below line to fix:
-RUN chown -R $USER:$USER /home/$USER/.jupyter
 
-RUN jupyter lab build # needed for Dash. Very annoying. Takes ages.
+# New requirements. Eventually merge into requirements.txt
+RUN pip install psycopg_pool \
+	pydantic
 
 USER root
 # In order to allow the Python package to be edited without
 # a rebuild, install all code as a volume. We will still copy the
 # files initially, so that things like the below pip install can work.
-COPY --chown=$USER ./ ./
-
-# Install our own project as a module.
-# This is done so the tests and JupyterLab code can import it.
+COPY --chown=$USER ./retinapy ./retinapy
 RUN pip install -e ./retinapy
 
+ENV npm_config_cache=/home/app/npm_cache
 # Switching to our new user. Do this at the end, as we need root permissions 
 # in order to create folders and install things.
 USER $USER
+
+
+CMD ["/bin/bash", "-c", "./scripts/runweb.sh"]
 

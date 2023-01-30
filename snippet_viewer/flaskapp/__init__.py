@@ -1,5 +1,6 @@
 import flask
-import flask_sqlalchemy
+import psycopg
+import psycopg_pool
 import retinapy.mea as mea
 import pathlib
 import json
@@ -19,40 +20,40 @@ in `init_app()`. This two step process introduces a single level of decoupling
 between the `app` object and the functions to be decorated.
 """
 
-db = flask_sqlalchemy.SQLAlchemy()
+# Database connection goes here. Not in requset or global context, both of
+# which are created and deleted before and after a single request.
+_dbpool = psycopg_pool.ConnectionPool(
+        # It's possible to give individual parameters like host="127.0.0.1"
+        # which get collated into kwargs, but I prefer to use the connection
+        # string, and then be free to use named parameters.
+        conninfo="postgresql://postgres:postgres@db:5432/maindb",
+        min_size=1, max_size=10, max_waiting=5)
+
+def dbpool():
+    #s = _dbpool.get_stats()
+    #app.logger.info(s)
+    return _dbpool
+
 
 def init_app():
     app = flask.Flask(__name__, instance_relative_config=True)
     # Load config.
     app.config.from_object("config.Config")
-    # Initialize the database.
-    db.init_app(app)
     # Register blueprints.
     from . import mea_api
     from . import views
+
     app.register_blueprint(mea_api.bp, url_prefix="/api")
     app.register_blueprint(views.bp, url_prefix="/")
 
     # Our hacky and temporary solution for loading data.
     mea_api.init_data()
 
-    # Check if the database is empty.
-    from . import models
-    create_database(app)
-
-
-
     # We could optionally add routes here.
-    #@app.route("/hello")
-    #def hello():
+    # @app.route("/hello")
+    # def hello():
     #    return "Hello World!"
 
     return app
-
-def create_database(app):
-    db_path = pathlib.Path(app.config['DB_NAME'])
-    if not db_path.exists():
-        with app.app_context():
-            db.create_all()
 
 app = init_app()

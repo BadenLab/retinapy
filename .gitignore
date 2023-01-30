@@ -36,6 +36,7 @@ node_modules/
 /snippet_viewer/flaskapp/static/ws_build/
 /snippet_viewer/flaskapp/static/kernel_plots/
 /snippet_viewer/flaskapp/static/kernel_plots_tooltip/
+/snippet_viewer/db/data/
 
 /prediction_viewer/build
 /prediction_viewer/.svelte-kit
