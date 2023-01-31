@@ -8,10 +8,10 @@ DBNAME = "maindb"
 app = typer.Typer()
 
 
-def connect_postgres():
+def connect_postgres(host="localhost"):
+    # "db" is the host in docker-compose.yml
     conn = psycopg.connect(
-        # host is the service name in docker-compose.yml
-        host="db",
+        host=host,
         port=5432,
         user="postgres",
         password="postgres",
@@ -20,10 +20,10 @@ def connect_postgres():
     return conn
 
 
-def connect():
+def connect(host="localhost"):
     conn = psycopg.connect(
         # host is the service name in docker-compose.yml
-        host="db",
+        host=host,
         port=5432,
         user="postgres",
         password="postgres",
@@ -32,30 +32,31 @@ def connect():
     return conn
 
 
-def create_db():
-    with connect_postgres() as conn:
+@app.command()
+def create(host="localhost"):
+    with connect_postgres(host) as conn:
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute(f"CREATE DATABASE {DBNAME}")
 
 
-def run_sql_file(path: Union[str, pathlib.Path]):
-    with connect() as conn:
+def run_sql_file(path: Union[str, pathlib.Path], host="localhost"):
+    with connect(host) as conn:
         with conn.cursor() as cur:
             with open(path, "r") as f:
                 cur.execute(f.read())
 
 
 @app.command()
-def recreate():
-    drop()
-    create_db()
-    run_sql_file("db/sql/v0.0.1.sql")
+def recreate(host="localhost"):
+    drop(host)
+    create(host)
+    run_sql_file("db/sql/v0.0.1.sql", host)
 
 
 @app.command()
-def drop():
-    with connect_postgres() as conn:
+def drop(host="localhost"):
+    with connect_postgres(host) as conn:
         conn.autocommit = True
         with conn.cursor() as cur:
             # Drop all tables in the database.

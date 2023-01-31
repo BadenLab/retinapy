@@ -1,4 +1,4 @@
-from application import init_app
+from flaskapp import init_app
 
 app = init_app()
 

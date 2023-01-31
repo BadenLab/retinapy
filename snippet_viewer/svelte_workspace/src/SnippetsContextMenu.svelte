@@ -50,20 +50,15 @@
 					// first snippet in the selection.
 					const x = event.data.originalEvent.pageX;
 					const y = event.data.originalEvent.pageY;
-					//const x = event.data.originalEvent.screenX;
-					//const y = event.data.originalEvent.screenY;
 					isSimilarOptionEnabled =
 						snippetSelection != null &&
 						snippetSelection.length === 1;
 					if (isSimilarOptionEnabled) {
-						const rgb = snippetSelection[0]._colorRGB();
+						const rgb = snippetSelection[0].colorRGB();
 						similarColor = `rgb(${255 * rgb[0]}, ${255 * rgb[1]}, ${
 							255 * rgb[2]
 						})`;
 					}
-					console.log("in the context menu!!");
-					console.log(`x: ${x}, y: ${y}`);
-					console.log(event);
 					showMenu(x, y, snippetSelection);
 					const destroy = () => {
 						closeMenu();
@@ -85,8 +80,13 @@
 		closeMenu();
 	}
 
-	function selectFirst(duration_secs: number) {
-		engine.workspace.selectSnippetsAfterQuiet(duration_secs);
+	function selectSingle(durationSecs: number) {
+		engine.workspace.marginSelect(durationSecs, false);
+		closeMenu();
+	}
+
+	function selectMulti(durationSecs: number) {
+		engine.workspace.marginSelect(durationSecs, true);
 		closeMenu();
 	}
 
@@ -219,40 +219,49 @@
 		<li>
 			<button
 				class="context-menu-item"
-				on:click={(e) => selectFirst(0.1)}
+				on:click={(e) => selectSingle(0.1)}
 			>
-				<div class="context-menu-label">Follows (100 ms)</div>
+				<div class="context-menu-label">Single (±100 ms)</div>
 			</button>
 		</li>
 		<li>
 			<button
 				class="context-menu-item"
-				on:click={(e) => selectFirst(0.5)}
+				on:click={(e) => selectSingle(0.5)}
 			>
-				<div class="context-menu-label">Follows (500 ms)</div>
+				<div class="context-menu-label">Single (±500 ms)</div>
 			</button>
 		</li>
 		<li>
 			<button
 				class="context-menu-item"
-				on:click={(e) => selectFirst(1.0)}
+				on:click={(e) => selectSingle(1.0)}
 			>
-				<div class="context-menu-label">Follows (1000 ms)</div>
+				<div class="context-menu-label">Single (±1000 ms)</div>
 			</button>
 		</li>
 		<li>
-			<button class="context-menu-item">
-				<div class="context-menu-label">First (100 ms)</div>
+			<button
+				class="context-menu-item"
+				on:click={(e) => selectMulti(0.002)}
+			>
+				<div class="context-menu-label">Burst (±2 ms)</div>
 			</button>
 		</li>
 		<li>
-			<button class="context-menu-item">
-				<div class="context-menu-label">First (500 ms)</div>
+			<button
+				class="context-menu-item"
+				on:click={(e) => selectMulti(0.005)}
+			>
+				<div class="context-menu-label">Burst (±5 ms)</div>
 			</button>
 		</li>
 		<li>
-			<button class="context-menu-item">
-				<div class="context-menu-label">First (1000 ms)</div>
+			<button
+				class="context-menu-item"
+				on:click={(e) => selectMulti(0.01)}
+			>
+				<div class="context-menu-label">Burst (±10 ms)</div>
 			</button>
 		</li>
 	</menu>

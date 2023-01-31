@@ -1,6 +1,23 @@
 name: flask-postgres
 version: '3.9'
 services:
+
+  web_server:
+    environment:
+      FLASK_DEBUG: True
+    build: 
+      context: ./
+      dockerfile: ./snippet_viewer/Dockerfile_server
+    environment:
+      DBHOST: localhost
+    volumes:
+      # Too big for context.
+      - ./snippet_viewer/resources:/app/snippet_viewer/resources:ro
+      - ./snippet_viewer/flaskapp/static:/app/snippet_viewer/flaskapp/static:ro
+    network_mode: "host"
+        #ports:
+        #- "5000:5000"
+
   web:
     environment:
       FLASK_DEBUG: True
@@ -9,8 +26,10 @@ services:
       context: ./
       dockerfile: ./snippet_viewer/Dockerfile
       args:
-        USER_ID: 1000
-        GROUP_ID: 1000
+        USER_ID: "${UID}"
+        GROUP_ID: "${GID}"
+    environment:
+      DBHOST: db
     ports:
       - "5000:5000"
     depends_on:
@@ -33,13 +52,13 @@ services:
     # I'm using the approach described in the "Arbitrary --user Notes" section.
     # This solution requires adding /etc/passwd as a read-only volume.
     # https://hub.docker.com/_/postgres
-    user: 1000:1000
+    user: "${UID}:${GID}"
     environment:
       POSTGRES_PASSWORD: postgres
         # These two are optional, and refer to the initially created user and 
         # database. These only have an effect if the data directory is empty.
-        # POSTGRES_USER: postgres
-        # POSTGRES_DB: postgres
+        #POSTGRES_USER: postgres
+        #POSTGRES_DB: postgres
     ports:
       - "5432:5432"
     healthcheck:

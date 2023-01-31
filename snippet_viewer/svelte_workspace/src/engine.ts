@@ -49,9 +49,15 @@ export const snippetIdx = new function () {
 export class GroupSelectData {
 	groupName: string;
 	spikes: number[];
+	recId: number;
 
 	constructor(group: Group) {
 		this.groupName = group.title;
+		// We assume all spikes come from same recording.
+		// TODO: remove this assumption.
+		this.recId = group.snippets.length > 0
+			? group.snippets[0].recId
+			: null;
 		this.spikes = [];
 		for (let s = 0; s < group.snippets.length; s++) {
 			this.spikes.push(group.snippets[s].spikeIdx);
@@ -377,7 +383,6 @@ export class SelectionManager<SelectableT extends Selectable> {
 		const onKeyDown = (event: KeyboardEvent) => {
 			// Delete any selected items.
 			console.log('selection manager, on key down');
-			console.log(`event.code: ${event.code}`);
 			if (event.code === 'Delete') {
 				// Delete selected groups.
 				for (let i = 0; i < this.selected.length; i++) {
@@ -567,7 +572,6 @@ export class SelectionManager<SelectableT extends Selectable> {
 	 * Set selection programatically.
 	 */
 	setSelection(toSelect: SelectableT[]) {
-		console.log("setSelection", toSelect);
 		// We need two-way comparison to see if anything should be done.
 		const toSelectSet = new Set(toSelect);
 		const selectedSet = new Set(this.selected);
@@ -2032,26 +2036,31 @@ export class Workspace implements DropReceiver {
 		this.snippetSelectionMgr.setSelection(filtered);
 	}
 
-	selectSnippetsAfterQuiet(durationSecs: number) {
+
+	marginSelect(marginSecs: number, hasSpike: boolean) {
 		if (this.snippetSelectionMgr == null) {
-			throw new Error("Cant' select snippets: no snippet selection manager.");
+			throw new Error("Can't select snippets: no snippet selection manager.");
 		}
-		const afterQuiet: Snippet[] = []
-		if (this.openGroup.snippets.length > 0) {
-			afterQuiet.push(this.openGroup.snippets[0]);
-		}
-		for (let i = 1; i < this.openGroup.snippets.length; i++) {
-			const snip1 = this.openGroup.snippets[i - 1];
-			const snip2 = this.openGroup.snippets[i];
-			// The snippets might come from recordings with different sensor sample rates.
+		const isMatch = (j: number, k: number) => {
+			if (j < 0 || k >= this.openGroup.snippets.length) {
+				return false;
+			}
+			const snip1 = this.openGroup.snippets[j];
+			const snip2 = this.openGroup.snippets[k];
 			const sampleRate1 = recsById.get(snip1.recId).sensorSampleRate / downsample;
 			const sampleRate2 = recsById.get(snip1.recId).sensorSampleRate / downsample;
-			const gapSecs = (snip1.spikeIdx * sampleRate1 - snip2.spikeIdx * sampleRate2);
-			if (gapSecs > durationSecs) {
-				afterQuiet.push(snip2);
+			const gapSecs = (snip2.spikeIdx * sampleRate2 - snip1.spikeIdx * sampleRate1);
+			const spikeFound = gapSecs < marginSecs;
+			return hasSpike ? spikeFound : !spikeFound;
+		};
+		const match: Snippet[] = []
+		for (let i = 0; i < this.openGroup.snippets.length; i++) {
+			if (isMatch(i - 1, i) || isMatch(i, i + 1)) {
+				match.push(this.openGroup.snippets[i]);
 			}
 		}
-		this.snippetSelectionMgr.setSelection(afterQuiet);
+		this.snippetSelectionMgr.setSelection(match);
+
 	}
 
 	/**
@@ -2114,7 +2123,7 @@ export async function addGroupFromCell(recId: number, cellId: number) {
 	for (let i = 0; i < spikes.length; i++) {
 		snippets.push(new Snippet(recId, spikes[i]));
 	}
-	workspace.createGroup(`r-${rec.id} c-${cellId}`, null, snippets);
+	workspace.createGroup(`c-${cellId} (${rec.name})`, null, snippets);
 }
 
 export function updateClock(dt: number) {

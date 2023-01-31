@@ -22,11 +22,16 @@ between the `app` object and the functions to be decorated.
 
 # Database connection goes here. Not in requset or global context, both of
 # which are created and deleted before and after a single request.
-_dbpool = psycopg_pool.ConnectionPool(
+_dbpool = None
+
+def create_dbpool(host, dbname):
+    global _dbpool
+    _dbpool = psycopg_pool.ConnectionPool(
         # It's possible to give individual parameters like host="127.0.0.1"
         # which get collated into kwargs, but I prefer to use the connection
         # string, and then be free to use named parameters.
-        conninfo="postgresql://postgres:postgres@db:5432/maindb",
+        #conninfo="postgresql://postgres:postgres@db:5432/maindb",
+        conninfo=f"postgresql://postgres:postgres@{host}:5432/{dbname}",
         min_size=1, max_size=10, max_waiting=5)
 
 def dbpool():
@@ -39,6 +44,12 @@ def init_app():
     app = flask.Flask(__name__, instance_relative_config=True)
     # Load config.
     app.config.from_object("config.Config")
+
+    # Create database connection pool.
+    host = app.config["DB_HOST"]
+    dbname = app.config["DB_NAME"]
+    create_dbpool(host, dbname)
+        
     # Register blueprints.
     from . import mea_api
     from . import views

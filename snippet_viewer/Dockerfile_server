@@ -74,14 +74,13 @@ RUN pip install psycopg_pool \
 	pydantic
 
 USER root
-# In order to allow the Python package to be edited without
-# a rebuild, install all code as a volume. We will still copy the
-# files initially, so that things like the below pip install can work.
-COPY --chown=$USER_ID ./retinapy ./retinapy
-RUN pip install -e ./retinapy
+# On the server, we need retinapy, scripts and snippet_viewer directories only,
+# and not in an editable way.
+COPY --chown=$USER ./retinapy ./retinapy
+RUN pip install ./retinapy
 
-# For running scripts, change ownership
 COPY --chown=$USER ./scripts ./scripts
+COPY --chown=$USER ./snippet_viewer ./snippet_viewer
 
 ENV npm_config_cache=/home/app/npm_cache
 # Switching to our new user. Do this at the end, as we need root permissions 
@@ -89,5 +88,5 @@ ENV npm_config_cache=/home/app/npm_cache
 USER $USER
 
 
-CMD ["/bin/bash", "-c", "./scripts/runweb.sh"]
+CMD ["/bin/bash", "-c", "./scripts/deployweb.sh"]
 

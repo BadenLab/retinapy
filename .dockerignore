@@ -11,5 +11,5 @@ prediction_viewer
 
 snippet_viewer/flaskapp/static/
 snippet_viewer/resources/
-snippet_viewer/db/
+snippet_viewer/db/data/
 

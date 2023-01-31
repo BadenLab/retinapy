@@ -78,7 +78,7 @@ RUN pip install \
 	dash
 	
 
-RUN conda install --yes -c conda-forge nodejs'>=12.12.0'
+RUN conda install --yes -c conda-forge nodejs
 
 # From: https://stackoverflow.com/questions/67050036/enable-jupyterlab-extensions-by-default-via-docker
 COPY --chown=$USER tools/jupyter_notebook_config.py /etc/jupyter/

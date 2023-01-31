@@ -9,10 +9,10 @@ import numpy.typing as npt
 import plotly
 
 
-DATA_DIR = "./resources/ff_noise_recordings"
-KERNEL_DIR = "chicken_kernel_plots_tooltip"
-# DATA_DIR = "./resources/frog_ff_noise"
-# KERNEL_DIR = "frog_kernel_plots_tooltip"
+#DATA_DIR = "./resources/ff_noise_recordings"
+#KERNEL_DIR = "chicken_kernel_plots_tooltip"
+DATA_DIR = "./resources/frog_ff_noise"
+KERNEL_DIR = "frog_kernel_plots_tooltip"
 CACHE_DIR = "./resources/snippets"
 DEFAULT_DOWNSAMPLE = 180
 # DEFAULT_KERNEL_LEN_MS = 1100 # ms
@@ -164,14 +164,15 @@ def stimulus(rec_id):
     return res
 
 
-@bp.post("/recording/<int:rec_id>/kernel_plot")
+@bp.post("/recording/<int:rec_id>/kernel-plot")
 def create_kernel(rec_id: int):
     """
     Create the kernel plot for the given spike times. The request is json of
     the form:
         {
             "spikes": int[],
-            "downsample": int,
+            "in_downsample": int,
+            "out_downsample": int,
             "snippetLen": int,
             "snippetPad": int,
         }
@@ -179,8 +180,9 @@ def create_kernel(rec_id: int):
     if not rec_id in recs_by_id:
         return "Invalid recording id", 400
     req = flask.request.get_json()
-    spikes = np.array(req["spikes"])
-    downsample = req["downsample"]
+    ds_conversion = req["in_downsample"] / req["out_downsample"]
+    spikes = np.floor(np.array(req["spikes"]) * ds_conversion).astype(int)
+    downsample = req["out_downsample"]
     snippet_len = req["snippetLen"]
     snippet_pad = req["snippetPad"]
     # Get decompressed stimulus
@@ -197,7 +199,7 @@ def create_kernel(rec_id: int):
     return res
 
 
-@bp.post("/recording/<int:rec_id>/merged_kernel_plot")
+@bp.post("/recording/<int:rec_id>/merged-kernel-plot")
 def merged_kernel(rec_id: int):
     """
     Create the kernel plot for the given spike times. The request is json of
